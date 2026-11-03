@@ -1877,7 +1877,7 @@ func _cover_line(i: int) -> String:
 ## 一項條件：達成者淡色打勾，未達成者紅叉，可附數值門檻。
 static func _need(ok: bool, text: String) -> String:
 	if ok:
-		return "{i:check} [color=%s]%s[/color]\n" % [C_NOTE, text]
+		return "{i:check} [color=%s]%s[/color]\n" % [C_NOTE, text.replace("[b]", "").replace("[/b]", "")]
 	return "{i:cross} %s\n" % text
 
 
@@ -1887,14 +1887,14 @@ func building_info(b: Dictionary) -> String:
 	var l: int = b.level - 1
 	# 第一行：最要緊的狀態
 	if b.fire > 0:
-		s += "{i:fire} [color=%s][b]正在燃燒[/b]，望火樓可撲救[/color]\n" % C_BAD
+		s += "{i:fire} [warn]正在燃燒：望火樓可撲救[/warn]\n\n"
 	elif b.age < 6:
 		s += "{i:note} [color=%s]興建中……[/color]\n" % C_NOTE
 	elif b.type != "town" and b.type != "yamen" and not b.conn:
-		s += "{i:bad} [color=%s][b]未通達[/b]：須以道路連接縣衙，且在轄境之內[/color]\n" % C_BAD
+		s += "{i:bad} [warn]未通達：須以道路連接縣衙[/warn]\n\n"
 	match b.type:
 		"house":
-			s += "{i:people} 居民 [b]%d[/b] 人　{i:%s} 民心 [b]%d[/b]　{i:land} 地價 [b]%d[/b]\n" % [
+			s += "{i:people} [n]%d[/n] 居民　{i:%s} [n]%d[/n] 民心　{i:land} [n]%d[/n] 地價\n" % [
 				Defs.GROW.house.pop[l], "mood_good" if b.happy >= 65 else ("mood_bad" if b.happy < 40 else "mood"), int(b.happy), int(lv[i])]
 			if b.level < 3:
 				s += "\n" + _head("升為%s還缺" % Defs.GROW.house.names[b.level]) + "\n"
@@ -1911,35 +1911,35 @@ func building_info(b: Dictionary) -> String:
 				s += "[color=%s]已是最高一階。[/color]\n" % C_NOTE
 		"shop":
 			var gr := int(goods_ratio * 100)
-			s += "{i:people} 伙計 [b]%d[/b] 人　{i:store} 貨源 [color=%s][b]%d%%[/b][/color]　{i:land} 地價 [b]%d[/b]\n" % [
+			s += "{i:people} [n]%d[/n] 伙計　{i:store} [color=%s][n]%d%%[/n][/color] 貨源　{i:land} [n]%d[/n] 地價\n" % [
 				Defs.GROW.shop.jobs[l], C_GOOD if gr >= 60 else C_BAD, gr, int(lv[i])]
 			if gr < 60:
-				s += "[color=%s]貨源不足：多設作坊，或經商路運入器物、綢緞。[/color]\n" % C_NOTE
+				s += "{i:hint} [b]貨源不足[/b]：多設[k]作坊[/k]，或經商路運入器物、綢緞。\n"
 		"workshop":
 			var ws := int(ws_supplied * 100)
-			s += "{i:people} 匠人 [b]%d[/b] 人　{i:store} 原料 [color=%s][b]%d%%[/b][/color]\n" % [Defs.GROW.workshop.jobs[l], C_GOOD if ws >= 50 else C_BAD, ws]
-			s += "[color=%s][b]絲[/b] → 綢緞　[b]鐵[/b]、[b]木[/b] → 器物；無料時只能手作少量器物[/color]\n" % C_NOTE
+			s += "{i:people} [n]%d[/n] 匠人　{i:store} [color=%s][n]%d%%[/n][/color] 原料\n" % [Defs.GROW.workshop.jobs[l], C_GOOD if ws >= 50 else C_BAD, ws]
+			s += "[k]絲[/k] → 綢緞　[k]鐵[/k]、[k]木[/k] → 器物\n[color=%s]無料時只能手作少量器物[/color]\n" % C_NOTE
 		"farm":
-			s += "{i:people} 農人 [b]%d[/b] 人　{i:land} 肥力 [b]%d%%[/b]　{i:grain} 上月收成 [b]%.1f[/b] 糧\n" % [Defs.GROW.farm.jobs[l], int(fert[i] * 100), b.last]
+			s += "{i:people} [n]%d[/n] 農人　{i:land} [n]%d%%[/n] 肥力　{i:grain} [n]%.0f[/n] 上月收成\n" % [Defs.GROW.farm.jobs[l], int(fert[i] * 100), b.last]
 		"town":
 			var m: Dictionary = b.get("mult", {})
 			var parts := []
 			for c in m:
 				parts.append("[b]%s[/b] [color=%s]×%.1f[/color]" % [Defs.cargo_name(c), C_GOOD, m[c]])
-			s += "收購一切貨物，[b]路途愈遠，獲利愈豐[/b]。\n{i:silver} 高價收購　%s\n" % "、".join(parts)
+			s += "收購一切貨物，[k]路途愈遠，獲利愈豐[/k]。\n{i:silver} 高價收購　%s\n" % "、".join(parts)
 		_:
 			var d: Dictionary = Defs.B.get(b.type, {})
 			s += "[color=#5d5147]%s[/color]\n" % d.get("desc", "")
 			if d.has("produce"):
-				s += "{i:industry} 上月產出 [b]%.1f[/b]\n" % b.last
+				s += "{i:industry} [n]%.0f[/n] 上月產出\n" % b.last
 				if not b.conn:
 					s += "[color=%s]未通達縣衙，貨物須經驛站或碼頭外運。[/color]\n" % C_NOTE
 			if d.get("jobs", 0) > 0:
-				s += "{i:people} 職缺 [b]%d[/b] 人　　" % d.jobs
+				s += "{i:people} [n]%d[/n] 職缺　" % d.jobs
 			if d.upkeep > 0:
-				s += "{i:silver} 每月維護 [b]%d[/b] 兩\n" % d.upkeep
+				s += "{i:silver} [n]%d[/n] 月費\n" % d.upkeep
 	if b.get("combo", "") != "":
-		s += "{i:good} 格局「[b]%s[/b]」成立中\n" % Defs.combo(b.combo).get("name", "")
+		s += "\n{i:good} 格局「[k]%s[/k]」成立中\n" % Defs.combo(b.combo).get("name", "")
 	if not b.stock.is_empty():
 		var parts := []
 		for c in Defs.CARGO_ORDER:
