@@ -5,6 +5,17 @@ const Art = preload("res://scripts/art.gd")
 const Batch = preload("res://scripts/batch.gd")
 const CH := 10
 const SEG := 16
+const ROLE_NEAR := {
+	"house": ["woman", "woman", "child", "elder"],
+	"farm": ["farmer"], "mulberry": ["farmer"], "tea": ["farmer"], "granary": ["farmer", "porter"],
+	"shop": ["peddler", "woman", "scholar"], "theater": ["woman", "child", "scholar"],
+	"workshop": ["porter"], "lumber": ["porter"], "quarry": ["porter"], "mine": ["porter"], "kiln": ["porter"],
+	"fishery": ["porter"], "station": ["porter"], "dock": ["porter"], "warehouse": ["porter"],
+	"school": ["scholar", "child"], "academy": ["scholar"],
+	"temple": ["monk"], "pagoda": ["monk"],
+	"yamen": ["official"], "constable": ["official"],
+}
+const ROLE_ANY := ["farmer", "porter", "peddler", "woman", "woman", "child", "elder", "scholar"]
 
 var objects: Node2D
 var ground_root: Node2D
@@ -147,9 +158,12 @@ func _update_walkers(delta: float) -> void:
 		w.off = Vector2(randf_range(-0.18, 0.18), randf_range(-0.18, 0.18))
 		w.fpos = Vector2(w.tile)
 		w.life = randf_range(20, 60)
+		w.role = _pick_role(w.tile)
+		w.pace = 0.6 if w.role == "elder" else 1.0
+		w.ph = randf()
 		objects.add_child(w)
 		walkers.append(w)
-	var spd: float = Game.SPEEDS[Game.speed] * delta * 0.9
+	var spd0: float = Game.SPEEDS[Game.speed] * delta * 0.9
 	for w in walkers.duplicate():
 		w.life -= delta
 		if walkers.size() > want or w.life <= 0 or not Game.inb(w.target.x, w.target.y) \
@@ -157,8 +171,21 @@ func _update_walkers(delta: float) -> void:
 			walkers.erase(w)
 			w.queue_free()
 			continue
+		var spd: float = spd0 * w.pace
 		var tgt := Vector2(w.target)
 		var d: Vector2 = tgt - w.fpos
+		if d.length() > 0.001 and spd > 0:
+			# 步伐與朝向：每格約走兩步半，相位量化為八格以免每幀重繪
+			var sd := Art.iso(d.x, d.y)
+			var front := sd.y > 0
+			var flip := sd.x < 0
+			w.ph = fmod(w.ph + spd * (3.4 if w.role == "child" else 2.5), 1.0)
+			var f := int(w.ph * 8.0)
+			if f != w.frame or front != w.front or flip != w.flip:
+				w.frame = f
+				w.front = front
+				w.flip = flip
+				w.queue_redraw()
 		if d.length() <= spd:
 			w.fpos = tgt
 			w.tile = w.target
@@ -173,6 +200,24 @@ func _update_walkers(delta: float) -> void:
 			w.fpos += d.normalized() * spd
 		var p: Vector2 = w.fpos + w.off
 		w.position = tile_pos(p.x, p.y) + Vector2(0, 1)
+
+
+## 依出生處附近之建築定行人身分：田邊多農夫，作坊碼頭多挑夫，寺前有僧，衙前有官。
+func _pick_role(t: Vector2i) -> String:
+	var votes := []
+	for dy in range(-2, 3):
+		for dx in range(-2, 3):
+			var x := t.x + dx
+			var y := t.y + dy
+			if not Game.inb(x, y):
+				continue
+			var id: int = Game.bld[Game.idx(x, y)]
+			if id < 0 or not Game.buildings.has(id):
+				continue
+			votes.append_array(ROLE_NEAR.get(Game.buildings[id].type, []))
+	if not votes.is_empty() and randf() < 0.7:
+		return votes[randi() % votes.size()]
+	return ROLE_ANY[randi() % ROLE_ANY.size()]
 
 
 # ───────────────────────── 地面 ─────────────────────────
@@ -416,61 +461,6 @@ class ObjChunk extends Node2D:
 			Art.scaffold(cv, c)
 			return
 		match b.type:
-			"house":
-				Art.house(cv, c, b.level, v)
-			"shop":
-				Art.shop(cv, c, b.level, v)
-			"workshop":
-				Art.workshop(cv, c, b.level, v)
-			"farm":
-				Art.farmhouse(cv, c, b.level, v)
-			"yamen":
-				Art.yamen(cv, c, v)
-			"temple":
-				Art.temple(cv, c, v)
-			"academy":
-				Art.academy(cv, c, v)
-			"belltower":
-				Art.belltower(cv, c, v)
-			"pagoda":
-				Art.pagoda(cv, c, v)
-			"archway":
-				Art.archway(cv, c, v)
-			"garden":
-				Art.garden(cv, c, v)
-			"theater":
-				Art.theater(cv, c, v)
-			"well":
-				Art.well(cv, c, v)
-			"constable":
-				Art.small_office(cv, c, "捕", Art.WALL_W, v)
-			"clinic":
-				Art.small_office(cv, c, "醫", Art.WALL_W, v)
-			"school":
-				Art.small_office(cv, c, "塾", Art.WALL_W, v)
-			"firewatch":
-				Art.firewatch(cv, c, v)
-			"granary":
-				Art.granary(cv, c, v)
-			"warehouse":
-				Art.warehouse(cv, c, v)
-			"lumber":
-				Art.lumber(cv, c, v)
-			"quarry":
-				Art.quarry(cv, c, v)
-			"mine":
-				Art.mountain(cv, c, v | 7)
-				Art.mine(cv, c, v)
-			"mulberry":
-				Art.mulberry(cv, c, v)
-			"tea":
-				Art.tea(cv, c, v)
-			"fishery":
-				Art.fishery(cv, c, v)
-			"kiln":
-				Art.kiln(cv, c, v)
-			"station":
-				Art.station(cv, c, v)
 			"dock":
 				var wd := Vector2i(1, 0)
 				for dd in Game.DIRS:
@@ -482,6 +472,8 @@ class ObjChunk extends Node2D:
 				Art.dock(cv, c, v, wd)
 			"town":
 				Art.town(cv, c, b.name)
+			_:
+				Art.building(cv, b.type, c, b.level, v)
 
 
 # ───────────────────────── 車船行人 ─────────────────────────
@@ -499,10 +491,16 @@ class Mover extends Node2D:
 	var fpos := Vector2.ZERO
 	var off := Vector2.ZERO
 	var life := 0.0
+	var role := ""
+	var pace := 1.0
+	var ph := 0.0
+	var frame := -1
+	var front := true
+	var flip := false
 
 	func _draw() -> void:
 		if kind == "walker":
-			Art.walker(self, v)
+			Art.figure(self, role, v, front, flip, ph)
 		else:
 			Art.vehicle(self, kind, dir, cargo_col, loaded)
 

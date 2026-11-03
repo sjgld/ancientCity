@@ -187,13 +187,11 @@ const STEMS := ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "
 # 各月農作係數（秋收）
 const HARVEST := [0.2, 0.4, 0.6, 0.8, 1.0, 1.0, 1.4, 2.2, 2.0, 0.6, 0.2, 0.1]
 
-var font: SystemFont
+var font: Font
 
 
 func _init() -> void:
-	font = SystemFont.new()
-	font.font_names = PackedStringArray(["STKaiti", "KaiTi", "Microsoft JhengHei", "Microsoft YaHei", "SimSun"])
-	font.antialiasing = TextServer.FONT_ANTIALIASING_GRAY
+	font = load("res://fonts/LXGWWenKaiTC-Medium.ttf")
 
 
 static func cn_num(n: int) -> String:
