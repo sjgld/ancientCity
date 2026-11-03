@@ -1829,6 +1829,16 @@ func toggle_policy(id: String) -> String:
 
 # ───────────────────────── 資訊文字 ─────────────────────────
 
+## 以下資訊文字供介面顯示：{i:名} 為行內圖示，[b] 標出數值與名稱。
+const C_GOOD := "#3f7a57"
+const C_BAD := "#b1372a"
+const C_NOTE := "#8b7d6e"
+
+
+static func _head(text: String) -> String:
+	return "[font_size=18][color=#29241f][b]%s[/b][/color][/font_size]" % text
+
+
 func tile_info(x: int, y: int) -> String:
 	if not inb(x, y):
 		return ""
@@ -1836,15 +1846,18 @@ func tile_info(x: int, y: int) -> String:
 	var tn: String = ["平地", "水域", "林地", "丘陵", "山嶺"][terrain[i]]
 	if canal[i] > 0:
 		tn = "運河"
-	var s := "[b]%s[/b]  (%d, %d)\n" % [tn, x, y]
+	var s := "[b]%s[/b]　[color=%s]%d, %d[/color]\n" % [tn, C_NOTE, x, y]
 	if road[i] > 0:
-		s += "%s%s\n" % ["橋樑 · " if terrain[i] == Defs.T.WATER else "", "土路" if road[i] == 1 else "石板路"]
-		s += "通達縣衙：%s\n" % ("是（%d格）" % road_dist[i] if conn_road(i) else "否")
+		var kind := "%s%s" % ["橋 · " if terrain[i] == Defs.T.WATER else "", "土路" if road[i] == 1 else "石板路"]
+		if conn_road(i):
+			s += "{i:road} %s　[color=%s]通達縣衙[/color]，沿路 [b]%d[/b] 格\n" % [kind, C_GOOD, road_dist[i]]
+		else:
+			s += "{i:road} %s　[color=%s]不通縣衙[/color]\n" % [kind, C_BAD]
 	if wall[i] > 0:
 		s += "城牆%s\n" % ("（城門）" if road[i] > 0 else "")
 	if zone[i] > 0:
-		s += "分區：%s\n" % Defs.ZONE_NAMES[zone[i]]
-	s += "地價：%d　肥力：%d%%\n" % [int(lv[i]), int(fert[i] * 100)]
+		s += "{i:zone} 分區 [b]%s[/b]\n" % Defs.ZONE_NAMES[zone[i]]
+	s += "{i:land} 地價 [b]%d[/b]　肥力 [b]%d%%[/b]\n" % [int(lv[i]), int(fert[i] * 100)]
 	s += _cover_line(i)
 	return s
 
@@ -1854,77 +1867,93 @@ func _cover_line(i: int) -> String:
 	var have := []
 	for k in names:
 		if cover[k][i] > 0:
-			have.append(names[k])
-	var s := "覆蓋：%s" % ("、".join(have) if have.size() > 0 else "無")
+			have.append("[b]%s[/b]" % names[k])
+	var s := "照應　%s" % ("・".join(have) if have.size() > 0 else "[color=%s]無[/color]" % C_NOTE)
 	if cover["pollution"][i] > 0.3:
-		s += "\n[color=#8a3020]煙塵：%.1f[/color]" % cover["pollution"][i]
+		s += "\n[color=%s]煙塵 [b]%.1f[/b][/color]" % [C_BAD, cover["pollution"][i]]
 	return s
+
+
+## 一項條件：達成者淡色打勾，未達成者紅叉，可附數值門檻。
+static func _need(ok: bool, text: String) -> String:
+	if ok:
+		return "{i:check} [color=%s]%s[/color]\n" % [C_NOTE, text]
+	return "{i:cross} %s\n" % text
 
 
 func building_info(b: Dictionary) -> String:
 	var i := idx(b.x, b.y)
 	var s := ""
 	var l: int = b.level - 1
+	# 第一行：最要緊的狀態
 	if b.fire > 0:
-		s += "[color=#c03020][b]正在燃燒！[/b][/color]\n"
-	if b.age < 6:
-		s += "[i]興建中……[/i]\n"
-	if b.type != "town" and b.type != "yamen":
-		s += "通達：%s\n" % ("是" if b.conn else "[color=#b03020]否（須以道路連接縣衙，且在轄境之內）[/color]")
+		s += "{i:fire} [color=%s][b]正在燃燒[/b]，望火樓可撲救[/color]\n" % C_BAD
+	elif b.age < 6:
+		s += "{i:note} [color=%s]興建中……[/color]\n" % C_NOTE
+	elif b.type != "town" and b.type != "yamen" and not b.conn:
+		s += "{i:bad} [color=%s][b]未通達[/b]：須以道路連接縣衙，且在轄境之內[/color]\n" % C_BAD
 	match b.type:
 		"house":
-			s += "居民：%d 人\n民心：%d\n" % [Defs.GROW.house.pop[l], int(b.happy)]
-			var need := []
-			if b.level == 1:
-				if cover["water"][i] == 0: need.append("水井")
-				if cover["market"][i] == 0: need.append("市肆")
-				if b.happy < 50: need.append("民心≥50")
-			elif b.level == 2:
-				if cover["edu"][i] == 0: need.append("私塾/書院")
-				if cover["faith"][i] == 0 and cover["fun"][i] == 0: need.append("寺廟或戲樓")
-				if lv[i] < 45: need.append("地價≥45")
-				if _lux_stock() < 3: need.append("綢緞/瓷器/茶")
-				if b.happy < 62: need.append("民心≥62")
-			if need.size() > 0:
-				s += "[color=#7a4a10]升級所需：%s[/color]\n" % "、".join(need)
+			s += "{i:people} 居民 [b]%d[/b] 人　{i:%s} 民心 [b]%d[/b]　{i:land} 地價 [b]%d[/b]\n" % [
+				Defs.GROW.house.pop[l], "mood_good" if b.happy >= 65 else ("mood_bad" if b.happy < 40 else "mood"), int(b.happy), int(lv[i])]
+			if b.level < 3:
+				s += "\n" + _head("升為%s還缺" % Defs.GROW.house.names[b.level]) + "\n"
+				var rows := []
+				if b.level == 1:
+					rows = [[cover["water"][i] > 0, "[b]水井[/b]"], [cover["market"][i] > 0, "[b]市集[/b]"], [b.happy >= 50, "民心 [b]%d[/b]／50" % int(b.happy)]]
+				else:
+					rows = [[cover["edu"][i] > 0, "[b]私塾[/b]或[b]書院[/b]"], [cover["faith"][i] > 0 or cover["fun"][i] > 0, "[b]寺廟[/b]或[b]戲樓[/b]"],
+						[lv[i] >= 45, "地價 [b]%d[/b]／45" % int(lv[i])], [_lux_stock() >= 3, "城中有[b]綢緞、瓷器或茶[/b]"], [b.happy >= 62, "民心 [b]%d[/b]／62" % int(b.happy)]]
+				rows.sort_custom(func(a, c): return not a[0] and c[0])
+				for r in rows:
+					s += _need(r[0], r[1])
+			else:
+				s += "[color=%s]已是最高一階。[/color]\n" % C_NOTE
 		"shop":
-			s += "伙計：%d 人\n貨源充足度：%d%%\n" % [Defs.GROW.shop.jobs[l], int(goods_ratio * 100)]
+			var gr := int(goods_ratio * 100)
+			s += "{i:people} 伙計 [b]%d[/b] 人　{i:store} 貨源 [color=%s][b]%d%%[/b][/color]　{i:land} 地價 [b]%d[/b]\n" % [
+				Defs.GROW.shop.jobs[l], C_GOOD if gr >= 60 else C_BAD, gr, int(lv[i])]
+			if gr < 60:
+				s += "[color=%s]貨源不足：多設作坊，或經商路運入器物、綢緞。[/color]\n" % C_NOTE
 		"workshop":
-			s += "匠人：%d 人\n原料供應：%d%%\n" % [Defs.GROW.workshop.jobs[l], int(ws_supplied * 100)]
-			s += "[color=#555]（絲→綢緞；鐵、木→器物；無料則手作少量器物）[/color]\n"
+			var ws := int(ws_supplied * 100)
+			s += "{i:people} 匠人 [b]%d[/b] 人　{i:store} 原料 [color=%s][b]%d%%[/b][/color]\n" % [Defs.GROW.workshop.jobs[l], C_GOOD if ws >= 50 else C_BAD, ws]
+			s += "[color=%s][b]絲[/b] → 綢緞　[b]鐵[/b]、[b]木[/b] → 器物；無料時只能手作少量器物[/color]\n" % C_NOTE
 		"farm":
-			s += "農人：%d 人\n肥力：%d%%\n上月收成：%.1f 糧\n" % [Defs.GROW.farm.jobs[l], int(fert[i] * 100), b.last]
+			s += "{i:people} 農人 [b]%d[/b] 人　{i:land} 肥力 [b]%d%%[/b]　{i:grain} 上月收成 [b]%.1f[/b] 糧\n" % [Defs.GROW.farm.jobs[l], int(fert[i] * 100), b.last]
 		"town":
 			var m: Dictionary = b.get("mult", {})
 			var parts := []
 			for c in m:
-				parts.append("%s×%.1f" % [Defs.cargo_name(c), m[c]])
-			s += "收購一切貨物，路途愈遠，獲利愈豐。\n高價收購：%s\n" % "、".join(parts)
+				parts.append("[b]%s[/b] [color=%s]×%.1f[/color]" % [Defs.cargo_name(c), C_GOOD, m[c]])
+			s += "收購一切貨物，[b]路途愈遠，獲利愈豐[/b]。\n{i:silver} 高價收購　%s\n" % "、".join(parts)
 		_:
 			var d: Dictionary = Defs.B.get(b.type, {})
-			s += "%s\n" % d.get("desc", "")
+			s += "[color=#5d5147]%s[/color]\n" % d.get("desc", "")
 			if d.has("produce"):
-				s += "上月產出：%.1f\n" % b.last
+				s += "{i:industry} 上月產出 [b]%.1f[/b]\n" % b.last
 				if not b.conn:
-					s += "[color=#555]未通達縣衙，貨物須經驛站／碼頭外運。[/color]\n"
+					s += "[color=%s]未通達縣衙，貨物須經驛站或碼頭外運。[/color]\n" % C_NOTE
+			if d.get("jobs", 0) > 0:
+				s += "{i:people} 職缺 [b]%d[/b] 人　　" % d.jobs
 			if d.upkeep > 0:
-				s += "每月維護：%d 兩\n" % d.upkeep
+				s += "{i:silver} 每月維護 [b]%d[/b] 兩\n" % d.upkeep
+	if b.get("combo", "") != "":
+		s += "{i:good} 格局「[b]%s[/b]」成立中\n" % Defs.combo(b.combo).get("name", "")
 	if not b.stock.is_empty():
 		var parts := []
 		for c in Defs.CARGO_ORDER:
 			if b.stock.get(c, 0.0) >= 0.5:
-				parts.append("%s %d" % [Defs.cargo_name(c), int(b.stock[c])])
+				parts.append("[b]%s[/b] %d" % [Defs.cargo_name(c), int(b.stock[c])])
 		if parts.size() > 0:
-			s += "存貨：%s\n" % "、".join(parts)
+			s += "{i:store} 存貨　%s\n" % "、".join(parts)
 	if is_stop(b):
 		var rs := []
 		for r in routes.values():
 			if r.a == b.id or r.b == b.id:
-				rs.append("%s ⇄ %s" % [bname(buildings[r.a]), bname(buildings[r.b])])
-		s += "路線：%s\n" % ("無" if rs.is_empty() else "\n　".join(rs))
-	if b.type != "town":
-		s += "地價：%d\n" % int(lv[i])
-	return s
+				rs.append("{i:route} [b]%s[/b] 至 [b]%s[/b]" % [bname(buildings[r.a]), bname(buildings[r.b])])
+		s += "\n" + _head("商路") + "\n" + ("[color=%s]尚無，點下方按鈕開闢。[/color]" % C_NOTE if rs.is_empty() else "\n".join(rs)) + "\n"
+	return s.strip_edges()
 
 
 # ───────────────────────── 存檔 ─────────────────────────

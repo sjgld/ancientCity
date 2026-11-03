@@ -500,6 +500,19 @@ static func icon(ci: CanvasItem, kind: String, r: Rect2, line: Color = INK) -> v
 			b.append(Vector2(15.5, 16))
 			b.append(Vector2(8.5, 16))
 			_shape(ci, b, Color("e6c565"), line, 1.3)
+		"water":
+			_shape(ci, [Vector2(12, 3), Vector2(16, 9), Vector2(18, 13.5), Vector2(17, 17.5), Vector2(14.5, 20.3), Vector2(12, 21),
+				Vector2(9.5, 20.3), Vector2(7, 17.5), Vector2(6, 13.5), Vector2(8, 9)], Color("6f9fb0"), line, 1.3)
+			_pl(ci, [Vector2(9.2, 14), Vector2(9.6, 17), Vector2(11.5, 18.6)], Color(1, 1, 1, 0.7), 1.2)
+		"fire":
+			_shape(ci, [Vector2(12, 2.5), Vector2(15.5, 8), Vector2(18.5, 12), Vector2(18.5, 16.5), Vector2(15.5, 20.5), Vector2(12, 21.5),
+				Vector2(8.5, 20.5), Vector2(5.5, 16.5), Vector2(6, 12), Vector2(8.5, 9.5), Vector2(10, 12.5)], Color("e2733a"), line, 1.2)
+			_shape(ci, [Vector2(12, 11), Vector2(14.5, 15), Vector2(14, 18.5), Vector2(12, 19.5), Vector2(10, 18.5), Vector2(9.8, 15.5)], Color("f2c24e"), Color(0, 0, 0, 0))
+		"land":
+			_shape(ci, [Vector2(12, 6), Vector2(21, 11), Vector2(12, 16), Vector2(3, 11)], Color("b8c08a"), line, 1.2)
+			_pl(ci, [Vector2(3, 11), Vector2(3, 14), Vector2(12, 19), Vector2(21, 14), Vector2(21, 11)], line, 1.2)
+			_pl(ci, [Vector2(12, 16), Vector2(12, 19)], line, 1.2)
+			ci.draw_circle(Vector2(12, 11), 2.4, Color("e6c565"))
 		"bookmark":
 			_shape(ci, [Vector2(6, 3), Vector2(18, 3), Vector2(18, 21), Vector2(12, 16.5), Vector2(6, 21)], Color("c9b48a"), line, 1.3)
 	ci.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)

@@ -62,13 +62,13 @@ var top_panel: Control
 var bottom_v: Control
 var quest_panel: PanelContainer
 var quest_now: Label
-var quest_reward: Label
+var quest_reward: RichTextLabel
 var quest_next: Label
 var quest_count: Label
 var minimap: MiniMap
 var mini_panel: PanelContainer
 var hover_tip: PanelContainer
-var hover_label: Label
+var hover_label: RichTextLabel
 var chart: Chart
 var music_on := true
 var menu_panel: PanelContainer
@@ -84,6 +84,7 @@ func _ready() -> void:
 	root.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 	root.theme = _make_theme()
 	add_child(root)
+	_build_icon_atlas()
 	_build_log()
 	_build_quests()
 	_build_minimap()
@@ -128,7 +129,8 @@ func _make_theme() -> Theme:
 		th.set_stylebox(k, "Flat", StyleBoxEmpty.new())
 	th.set_color("font_color", "Label", INK)
 	th.set_color("default_color", "RichTextLabel", INK)
-	th.set_font("bold_font", "RichTextLabel", UIArt.font("body_b"))
+	# 粗體改用宋體半粗：楷書內文中的名稱與數字一眼可辨
+	th.set_font("bold_font", "RichTextLabel", UIArt.font("num"))
 	th.set_stylebox("normal", "LineEdit", UIArt.box("flat", Color("f6f1e4"), 8, 4, 0.0, false, Color(INK, 0.5)))
 	th.set_stylebox("focus", "LineEdit", UIArt.box("flat", Color("f6f1e4"), 8, 4, 0.0, false, UIArt.SHIQING))
 	th.set_color("font_color", "LineEdit", INK)
@@ -145,6 +147,51 @@ func _make_theme() -> Theme:
 	th.set_stylebox("fill", "ProgressBar", UIArt.box("flat", Color(INK, 0.8), 0, 0, 0.0))
 	th.set_stylebox("panel", "ScrollContainer", StyleBoxEmpty.new())
 	return th
+
+
+# ───────────────────────── 行內圖示 ─────────────────────────
+
+## 可在文字中以 {i:名} 嵌入的圖示；開局時在一張子畫面上畫成圖集。
+const INLINE_ICONS := ["silver", "people", "mood", "mood_good", "mood_bad", "grain", "road", "zone", "store", "route",
+	"check", "cross", "good", "bad", "note", "hint", "locate", "water", "fire", "land", "civic", "industry", "gov", "chart"]
+var _icon_tex := {}
+var _icon_re := RegEx.create_from_string("\\{i:([a-z_]+)\\}")
+
+
+func _build_icon_atlas() -> void:
+	var vp := SubViewport.new()
+	vp.transparent_bg = true
+	vp.size = Vector2i(32 * INLINE_ICONS.size(), 32)
+	vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+	add_child(vp)
+	var painter := IconPainter.new()
+	painter.kinds = INLINE_ICONS
+	vp.add_child(painter)
+	for k in INLINE_ICONS.size():
+		var at := AtlasTexture.new()
+		at.atlas = vp.get_texture()
+		at.region = Rect2(k * 32, 0, 32, 32)
+		_icon_tex[INLINE_ICONS[k]] = at
+
+
+## 把含 {i:名} 的 BBCode 文字填進 RichTextLabel。
+func set_rich(rtl: RichTextLabel, text: String, icon_px: int = 17) -> void:
+	rtl.clear()
+	var pos := 0
+	for m in _icon_re.search_all(text):
+		if m.get_start() > pos:
+			rtl.append_text(text.substr(pos, m.get_start() - pos))
+		var tex: Texture2D = _icon_tex.get(m.get_string(1))
+		if tex:
+			rtl.add_image(tex, icon_px, icon_px, Color.WHITE, INLINE_ALIGNMENT_CENTER)
+		pos = m.get_end()
+	if pos < text.length():
+		rtl.append_text(text.substr(pos))
+
+
+## 文中小標題。
+static func head(text: String) -> String:
+	return "[font_size=18][color=#29241f][b]%s[/b][/color][/font_size]" % text
 
 
 func _label(text: String, size: int = 16, col: Color = INK, kind: String = "body") -> Label:
@@ -524,7 +571,7 @@ func _build_info() -> void:
 	info_panel.add_theme_stylebox_override("panel", UIArt.box("paper", UIArt.PAPER, 20, 16))
 	info_panel.anchor_left = 1.0
 	info_panel.anchor_right = 1.0
-	info_panel.offset_left = -368
+	info_panel.offset_left = -384
 	info_panel.offset_right = -12
 	info_panel.offset_top = TOP_H + 12
 	root.add_child(info_panel)
@@ -546,7 +593,7 @@ func _build_info() -> void:
 	info_body.bbcode_enabled = true
 	info_body.fit_content = true
 	info_body.scroll_active = false
-	info_body.custom_minimum_size = Vector2(316, 0)
+	info_body.custom_minimum_size = Vector2(330, 0)
 	info_body.add_theme_font_size_override("normal_font_size", 16)
 	info_body.add_theme_font_size_override("bold_font_size", 16)
 	info_body.add_theme_constant_override("line_separation", 4)
@@ -565,7 +612,7 @@ func show_info() -> void:
 		var v: Dictionary = Game.vehicles[vid]
 		info_panel.visible = true
 		info_title.text = Defs.VEHICLES[v.kind]["name"]
-		info_body.text = _vehicle_text(v)
+		set_rich(info_body, _vehicle_text(v))
 		info_btns.add_child(_button("查看商路", func(): open_window("routes")))
 		info_btns.add_child(_button("賣出", func():
 			Game.vehicles.erase(vid)
@@ -581,7 +628,7 @@ func show_info() -> void:
 		info_title.text = Game.bname(b)
 		if b.type == "yamen":
 			info_title.text = "%s%s" % [Game.city_name, ["里署", "鎮署", "縣衙", "州衙", "府衙", "皇城"][Game.rank]]
-		info_body.text = _yamen_text() if b.type == "yamen" else Game.building_info(b)
+		set_rich(info_body, _yamen_text() if b.type == "yamen" else Game.building_info(b))
 		if Game.is_stop(b):
 			info_btns.add_child(_button("由此開闢商路", func():
 				main.set_tool("route")
@@ -601,7 +648,7 @@ func show_info() -> void:
 	if Game.inb(t.x, t.y):
 		info_panel.visible = true
 		info_title.text = "地塊"
-		info_body.text = Game.tile_info(t.x, t.y)
+		set_rich(info_body, Game.tile_info(t.x, t.y))
 		info_panel.reset_size()
 		return
 	info_panel.visible = false
@@ -611,49 +658,52 @@ func _vehicle_text(v: Dictionary) -> String:
 	var d: Dictionary = Defs.VEHICLES[v.kind]
 	var r: Dictionary = Game.routes.get(v.route, {})
 	var t := ""
+	if v.state == "lost":
+		t += "{i:bad} [color=#b1372a][b]無路可通[/b]：路線被拆斷，車船停在原地[/color]\n"
 	if not r.is_empty():
-		t += "商路：%s 至 %s\n" % [Game.bname(Game.buildings[r.a]), Game.bname(Game.buildings[r.b])]
-	var st := {"move": "行進中", "load": "裝卸中", "lost": "[color=#b1372a]無路可通[/color]"}
-	t += "狀態：%s\n" % st.get(v.state, v.state)
+		t += "{i:route} [b]%s[/b] 至 [b]%s[/b]\n" % [Game.bname(Game.buildings[r.a]), Game.bname(Game.buildings[r.b])]
+	var st := {"move": "行進中", "load": "裝卸中", "lost": "停駐"}
+	t += "狀態　[b]%s[/b]" % st.get(v.state, v.state)
 	if Game.buildings.has(v.to):
-		t += "前往：%s\n" % Game.bname(Game.buildings[v.to])
+		t += "，前往 [b]%s[/b]" % Game.bname(Game.buildings[v.to])
+	t += "\n"
 	if v.amt > 0:
-		t += "載貨：%s %d／%d\n" % [Defs.cargo_name(v.cargo), int(v.amt), d.cap]
+		t += "{i:store} 載 [b]%s %d[/b]／%d\n" % [Defs.cargo_name(v.cargo), int(v.amt), d.cap]
 	else:
-		t += "載貨：空載（容量 %d）\n" % d.cap
-	t += "速度：每日 %.1f 格　月費 %d 兩\n" % [d.speed, d.upkeep]
+		t += "{i:store} [color=#8b7d6e]空載[/color]　容量 [b]%d[/b]\n" % d.cap
+	t += "每日 [b]%.1f[/b] 格　　{i:silver} 月費 [b]%d[/b] 兩" % [d.speed, d.upkeep]
 	return t
 
 
 func _yamen_text() -> String:
 	var s: Dictionary = Game.stats
-	var t := "人丁 %d　戶數 %d\n" % [s.pop, s.houses]
-	t += "勞力 %d　職缺 %d　到崗 %d%%\n" % [s.labor, s.jobs, int(s.staff * 100)]
-	t += "失業 %d%%　民心 %d\n" % [int(s.unemp * 100), int(s.happy)]
-	t += "轄境：沿路 %d 格內\n" % Game.radius()
+	var t := "{i:people} 人丁 [b]%d[/b]　戶數 [b]%d[/b]　　{i:mood} 民心 [b]%d[/b]\n" % [s.pop, s.houses, int(s.happy)]
+	t += "勞力 [b]%d[/b]　職缺 [b]%d[/b]　到崗 [b]%d%%[/b]　失業 [color=%s][b]%d%%[/b][/color]\n" % [
+		s.labor, s.jobs, int(s.staff * 100), "#b1372a" if s.unemp > 0.15 else "#29241f", int(s.unemp * 100)]
+	t += "{i:road} 轄境：沿路 [b]%d[/b] 格內\n" % Game.radius()
 	if Game.rank < Defs.RANKS.size() - 1:
 		var nx: Dictionary = Defs.RANKS[Game.rank + 1]
-		t += "晉升「%s」尚需人丁 %d\n" % [nx.name, maxi(0, nx.pop - s.pop)]
-	t += "\n[b]施政提要[/b]\n"
+		t += "{i:gov} 晉升「[b]%s[/b]」尚需人丁 [b]%d[/b]\n" % [nx.name, maxi(0, nx.pop - s.pop)]
+	t += "\n" + head("施政提要") + "\n"
 	var tips := []
 	if s.pop < 30:
-		tips.append("沿路劃設民居與農田，百姓自會遷入。")
+		tips.append("{i:hint} 沿路劃設[b]民居[/b]與[b]農田[/b]，百姓自會遷入。")
 	if Game.food_short > 0.05:
-		tips.append("[color=#b1372a]糧食不足[/color]：多劃農田、建漁場，並修糧倉存秋糧。")
+		tips.append("{i:bad} [color=#b1372a][b]糧食不足[/b][/color]：多劃農田、建漁場，並修[b]糧倉[/b]存秋糧。")
 	if s.dC > 50:
-		tips.append("市肆需求高，劃設市肆。")
+		tips.append("{i:hint} 市肆需求高，劃設[b]市肆[/b]。")
 	if s.dI > 50:
-		tips.append("作坊需求高，劃設作坊。")
+		tips.append("{i:hint} 作坊需求高，劃設[b]作坊[/b]。")
 	if s.unemp > 0.15:
-		tips.append("失業者眾，多設市肆、作坊或產業。")
+		tips.append("{i:hint} 失業者眾，多設[b]市肆、作坊[/b]或產業。")
 	if Game.stats.houses > 8 and Game._avg_cover_houses("water") < 0.6:
-		tips.append("許多民居缺水，廣鑿水井。")
+		tips.append("{i:water} 許多民居[b]缺水[/b]，廣鑿水井。")
 	if Game.rank >= 1 and Game._avg_cover_houses("health") < 0.5:
-		tips.append("醫館不足，恐生疫病。")
+		tips.append("{i:bad} [b]醫館不足[/b]，恐生疫病。")
 	if Game.routes.is_empty() and Game.rank >= 1:
-		tips.append("建驛站並開闢通往外邑的商路，以貨物換銀兩。")
+		tips.append("{i:route} 建[b]驛站[/b]並開闢通往外邑的商路，以貨物換銀兩。")
 	if tips.is_empty():
-		tips.append("政通人和，可擴建城池、經營商路。")
+		tips.append("{i:good} 政通人和，可擴建城池、經營商路。")
 	t += "\n".join(tips)
 	return t
 
@@ -756,7 +806,7 @@ func _process(delta: float) -> void:
 		_update_quests()
 		if info_panel.visible and main.selected_vehicle >= 0:
 			if Game.vehicles.has(main.selected_vehicle):
-				info_body.text = _vehicle_text(Game.vehicles[main.selected_vehicle])
+				set_rich(info_body, _vehicle_text(Game.vehicles[main.selected_vehicle]))
 			else:
 				main.selected_vehicle = -1
 				show_info()
@@ -764,7 +814,7 @@ func _process(delta: float) -> void:
 			var sel: int = main.selected
 			if sel >= 0 and Game.buildings.has(sel):
 				var b: Dictionary = Game.buildings[sel]
-				info_body.text = _yamen_text() if b.type == "yamen" else Game.building_info(b)
+				set_rich(info_body, _yamen_text() if b.type == "yamen" else Game.building_info(b))
 			elif sel >= 0:
 				main.selected = -1
 				show_info()
@@ -1018,7 +1068,9 @@ func _fill_window(id: String, full: bool = false) -> void:
 			if not full:
 				return
 			_clear(body)
-			body.add_child(_rich(_help_text()))
+			var hl := _rich("")
+			set_rich(hl, _help_text())
+			body.add_child(hl)
 		"combos":
 			if not full:
 				return
@@ -1050,11 +1102,16 @@ func _combo_card(c: Dictionary) -> Control:
 	if found:
 		t.add_child(_label("%s成　現有 %d 處　每處月入 %d 兩" % [Game.combos_found[c.id].split(" ")[0], n, c.income], 13, UIArt.INK_3, "num"))
 	v.add_child(_label(c.verse, 17, UIArt.INK_2 if found else UIArt.INK_3))
-	var body := _label(c.text if found else "尚未成局。", 15, INK if found else UIArt.INK_3)
-	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var body := _rich(c.text if found else "[color=#8b7d6e]尚未成局。[/color]")
 	body.custom_minimum_size = Vector2(560, 0)
+	body.add_theme_font_size_override("normal_font_size", 15)
+	body.add_theme_font_size_override("bold_font_size", 15)
 	v.add_child(body)
-	v.add_child(_label("條件：" + c.rule, 14, UIArt.SHIQING if not found else UIArt.INK_3))
+	var rule := _rich("")
+	rule.add_theme_font_size_override("normal_font_size", 14)
+	rule.add_theme_font_size_override("bold_font_size", 14)
+	set_rich(rule, ("{i:check} [color=#8b7d6e]條件：%s[/color]" if found else "{i:hint} [color=#2e5a6f]條件：%s[/color]") % c.rule, 15)
+	v.add_child(rule)
 	return h
 
 
@@ -1095,26 +1152,28 @@ func _rich(text: String) -> RichTextLabel:
 
 
 func _help_text() -> String:
-	return """[b]操作[/b]
-左鍵：使用工具、選取建築。道路、運河、城牆可拖曳成線；分區與拆除可拖曳成片。
-右鍵拖曳或中鍵：平移。滾輪：縮放。WASD、方向鍵：平移。
-右鍵輕點或 Esc：取消工具。空白鍵：暫停。1、2、3：調速。B：拆除。F5 存檔，F9 讀檔。
+	return head("操作") + """
+{i:locate} [b]左鍵[/b]：使用工具、選取建築。道路、運河、城牆可[b]拖曳成線[/b]；分區與拆除可[b]拖曳成片[/b]。
+{i:locate} [b]右鍵拖曳[/b]或中鍵：平移。[b]滾輪[/b]：縮放。[b]WASD[/b]、方向鍵：平移。
+{i:locate} [b]Esc[/b] 或右鍵輕點：取消工具。[b]空白鍵[/b] 暫停，[b]1、2、3[/b] 調速，[b]B[/b] 拆除，[b]F5[/b] 存檔，[b]F9[/b] 讀檔。
 
-[b]築城之道[/b]
-[color=#b1372a]道路須連通縣衙[/color]，且在轄境（沿路距離）之內，民居、市肆、作坊方能興起。農田距路三格內即可。
-地頭左側四根需求條分別為民、市、工、農，顏色與地圖上的分區相同。百姓需要職缺，市肆作坊需要人手，人人都要吃糧。
-秋收時節糧產最豐，冬季幾無收成。修建糧倉，方能熬過寒冬。
-茅舍得水井與市集即升為瓦屋；瓦屋若有教化、信仰或娛樂，地價夠高，城中又有綢緞、瓷器或茶，便成宅院。
-人丁增長可晉升品級：村、鎮、縣、州、府、京，每晉一級，轄境擴大，並解鎖新建築、政令與車船。
+""" + head("築城之道") + """
+{i:road} [color=#b1372a][b]道路須連通縣衙[/b][/color]，且在轄境之內，民居、市肆、作坊方能興起；農田距路三格內即可。
+{i:zone} 地頭左側四根[b]需求條[/b]依序為民、市、工、農，顏色與地圖上的分區相同。
+{i:grain} [b]秋收[/b]最豐，[b]冬季[/b]幾無收成：修建[b]糧倉[/b]才能熬過寒冬。
+{i:people} 茅舍得[b]水井[/b]與[b]市集[/b]升為瓦屋；瓦屋再有[b]教化[/b]、[b]信仰或娛樂[/b]、夠高的[b]地價[/b]與[b]奢侈品[/b]，便成宅院。
+{i:gov} 人丁增長可[b]晉升品級[/b]：村、鎮、縣、州、府、京，每晉一級解鎖新建築、政令與車船。
 
-[b]產業與貨運[/b]
-伐木場、採石場、鐵礦、茶園等須建於林地、丘陵、山嶺。若道路可達縣衙，產物自動入城；否則堆積於產地。
-在產地旁建驛站（車）或碼頭（船），再以「開闢路線」連到城中驛站或外邑。
-外邑（洛陽、揚州、成都）收購一切貨物，各有偏好的高價貨。路途愈遠，運費愈高；但行程拖太久會折價。
-城中存量過半的貨物，可經城內驛站外銷。瓷窯以石料燒製瓷器，是最賺錢的貨物。
+""" + head("格局") + """
+{i:good} 把特定建築擺在一起即成[b]格局[/b]，外觀隨之改變、每月另有收入，並收入[b]圖鑑[/b]。例如：跨水的橋兩頭有市肆，便成[b]虹橋[/b]。
 
-[b]災異[/b]
-火災：望火樓可撲救。疫病：醫館可防。盜匪：捕快房可禦。洪水：「興修水利」可防。旱災則只能靠存糧。"""
+""" + head("產業與貨運") + """
+{i:industry} 伐木場、採石場、鐵礦、茶園等須建於[b]林地、丘陵、山嶺[/b]。道路通達縣衙者產物自動入城，否則堆在產地。
+{i:route} 在產地旁建[b]驛站[/b]（車）或[b]碼頭[/b]（船），再以「開闢路線」連到城中或[b]外邑[/b]。
+{i:silver} 外邑收購一切貨物，各有偏好；[b]路途愈遠，出價愈高[/b]，但拖太久會折價。[b]瓷器[/b]最值錢。
+
+""" + head("災異") + """
+{i:fire} 火災靠[b]望火樓[/b]，疫病靠[b]醫館[/b]，盜匪靠[b]捕快房[/b]，洪水靠「[b]興修水利[/b]」，旱災只能靠[b]存糧[/b]。"""
 
 
 # ───────────────────────── 開場 ─────────────────────────
@@ -1243,7 +1302,14 @@ func _build_quests() -> void:
 	quest_now.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	quest_now.custom_minimum_size = Vector2(248, 0)
 	v.add_child(quest_now)
-	quest_reward = _label("", 14, Color("6b5226"))
+	quest_reward = RichTextLabel.new()
+	quest_reward.bbcode_enabled = true
+	quest_reward.fit_content = true
+	quest_reward.scroll_active = false
+	quest_reward.custom_minimum_size = Vector2(248, 0)
+	quest_reward.add_theme_font_size_override("normal_font_size", 14)
+	quest_reward.add_theme_font_size_override("bold_font_size", 14)
+	quest_reward.add_theme_color_override("default_color", Color("6b5226"))
 	v.add_child(quest_reward)
 	quest_next = _label("", 13, UIArt.INK_3)
 	quest_next.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -1261,7 +1327,8 @@ func _update_quests() -> void:
 	quest_panel.visible = true
 	quest_count.text = "第%s道，共%s道" % [Defs.cn_num(Game.quests_done.size() + 1), Defs.cn_num(Defs.QUESTS.size())]
 	quest_now.text = qs[0].text
-	quest_reward.text = ("賞銀 %s 兩" % _fmt(qs[0].reward)) if qs[0].reward > 0 else ""
+	set_rich(quest_reward, ("{i:silver} 賞銀 [b]%s[/b] 兩" % _fmt(qs[0].reward)) if qs[0].reward > 0 else "", 15)
+	quest_reward.visible = qs[0].reward > 0
 	var rest := []
 	for k in range(1, qs.size()):
 		rest.append(qs[k].text)
@@ -1292,7 +1359,13 @@ func _build_hover() -> void:
 	hover_tip.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hover_tip.add_theme_stylebox_override("panel", UIArt.box("paper", UIArt.PAPER, 10, 6, 3.0, false, Color(INK, 0.5)))
 	root.add_child(hover_tip)
-	hover_label = _label("", 15)
+	hover_label = RichTextLabel.new()
+	hover_label.bbcode_enabled = true
+	hover_label.fit_content = true
+	hover_label.scroll_active = false
+	hover_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	hover_label.add_theme_font_size_override("normal_font_size", 15)
+	hover_label.add_theme_font_size_override("bold_font_size", 15)
 	hover_tip.add_child(hover_label)
 	hover_tip.visible = false
 
@@ -1301,7 +1374,7 @@ func set_hover(text: String, at: Vector2) -> void:
 	if text == "" or main.title_mode:
 		hover_tip.visible = false
 		return
-	hover_label.text = text
+	set_rich(hover_label, text, 15)
 	hover_tip.visible = true
 	hover_tip.reset_size()
 	var p := at + Vector2(18, 18)
@@ -1313,6 +1386,15 @@ func set_hover(text: String, at: Vector2) -> void:
 
 
 # ───────────────────────── 天頭元件 ─────────────────────────
+
+## 把行內圖示依序畫成一排，供圖集取用。
+class IconPainter extends Control:
+	var kinds: Array = []
+
+	func _draw() -> void:
+		for k in kinds.size():
+			UIArt.icon(self, kinds[k], Rect2(k * 32 + 1, 1, 30, 30))
+
 
 class TopBand extends Control:
 	func _init() -> void:
@@ -1824,8 +1906,38 @@ class LogStrip extends Control:
 				col = UIArt.BAD
 			UIArt.icon(self, ic, Rect2(12, y - 8, 16, 16))
 			UIArt.text_l(self, nf, 34, y, l.date, 12, Color(UIArt.INK_3, a))
-			draw_string(f, Vector2(76, y + (f.get_ascent(15) - f.get_descent(15)) * 0.5), l.text, HORIZONTAL_ALIGNMENT_LEFT, size.x - 88, 15, Color(col, a))
+			_rich_line(76, y, l.text, Color(col, a), size.x - 12)
 			y -= 25.0
+
+
+	## 一行邸報：「」內的名稱用粗字，數字用宋體數字；超出寬度則截斷。
+	var _seg_re := RegEx.create_from_string("「[^」]*」|[0-9][0-9,]*")
+
+	func _rich_line(x: float, cy: float, text: String, col: Color, right: float) -> void:
+		var body := UIArt.font("body")
+		var bold := UIArt.font("num")
+		var num := UIArt.font("num")
+		var pos := 0
+		var parts := []
+		for m in _seg_re.search_all(text):
+			if m.get_start() > pos:
+				parts.append([text.substr(pos, m.get_start() - pos), body, col])
+			var t := m.get_string()
+			if t.begins_with("「"):
+				parts.append([t, bold, col.darkened(0.15)])
+			else:
+				parts.append([t, num, Color(UIArt.NIJIN.darkened(0.25), col.a) if col.r < 0.5 else col])
+			pos = m.get_end()
+		if pos < text.length():
+			parts.append([text.substr(pos), body, col])
+		for p in parts:
+			var f: Font = p[1]
+			var w := f.get_string_size(p[0], HORIZONTAL_ALIGNMENT_LEFT, -1, 15).x
+			if x + w > right:
+				draw_string(f, Vector2(x, cy + (f.get_ascent(15) - f.get_descent(15)) * 0.5), p[0], HORIZONTAL_ALIGNMENT_LEFT, maxf(right - x, 1), 15, p[2])
+				return
+			draw_string(f, Vector2(x, cy + (f.get_ascent(15) - f.get_descent(15)) * 0.5), p[0], HORIZONTAL_ALIGNMENT_LEFT, -1, 15, p[2])
+			x += w
 
 
 ## 圖鑑插圖：以遊戲本身的畫法畫出格局的小景。

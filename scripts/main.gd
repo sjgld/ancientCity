@@ -204,25 +204,28 @@ func _hover_info(t: Vector2i) -> String:
 	var vid := _vehicle_at(to_tile_f(get_global_mouse_position()))
 	if vid >= 0:
 		var v: Dictionary = Game.vehicles[vid]
-		var s: String = Defs.VEHICLES[v.kind]["name"]
+		var s: String = "[b]%s[/b]" % Defs.VEHICLES[v.kind]["name"]
 		if v.amt > 0:
-			s += "　載%s %d" % [Defs.cargo_name(v.cargo), int(v.amt)]
+			s += "　{i:store} %s [b]%d[/b]" % [Defs.cargo_name(v.cargo), int(v.amt)]
 		return s
 	var b := Game.building_at(t.x, t.y)
 	if b.is_empty():
 		return ""
-	var s := Game.bname(b)
+	var s := "[b]%s[/b]" % Game.bname(b)
 	match b.type:
 		"house":
-			s += "　%d人　民心%d" % [Defs.GROW.house.pop[b.level - 1], int(b.happy)]
+			var hp := int(b.happy)
+			s += "　{i:people} [b]%d[/b]　{i:%s} [b]%d[/b]" % [Defs.GROW.house.pop[b.level - 1], "mood_good" if hp >= 65 else ("mood_bad" if hp < 40 else "mood"), hp]
 		"farm":
-			s += "　肥力%d%%" % int(Game.fert[Game.idx(b.x, b.y)] * 100)
+			s += "　{i:land} 肥力 [b]%d%%[/b]" % int(Game.fert[Game.idx(b.x, b.y)] * 100)
 		"town":
-			s += "（外邑）"
+			s += "　[color=#8b7d6e]外邑[/color]"
+	if b.get("combo", "") != "":
+		s += "　{i:good} %s" % Defs.combo(b.combo).get("name", "")
 	if b.fire > 0:
-		s += "　[失火]"
+		s += "　{i:fire} [color=#b1372a][b]失火[/b][/color]"
 	elif b.type != "town" and b.type != "yamen" and not b.conn:
-		s += "　[未通達]"
+		s += "　{i:bad} [color=#b1372a]未通達[/color]"
 	return s
 
 
