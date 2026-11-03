@@ -1400,7 +1400,7 @@ static func rainbow_bridge(ci, c: Vector2, ax_x: bool, k: int, n: int, v: int) -
 
 
 ## 格局成立後加在建築上的點綴。
-static func combo_deco(ci, kind: String, c: Vector2, size: int, v: int) -> void:
+static func combo_deco(ci, kind: String, c: Vector2, size: int, v: int, btype: String = "", quad: int = -1) -> void:
 	match kind:
 		"wazi":
 			# 簷下張掛成串燈籠與彩旗
@@ -1431,8 +1431,134 @@ static func combo_deco(ci, kind: String, c: Vector2, size: int, v: int) -> void:
 			ci.draw_line(fp, fp - Vector2(0, 34), INK, 1.5)
 			poly(ci, [fp - Vector2(0, 34), fp - Vector2(-12, 32), fp - Vector2(-12, 22), fp - Vector2(0, 24)], RED)
 			label(ci, fp - Vector2(-6, 28), "漕", 8, Color(0.98, 0.92, 0.8))
+		"siheyuan":
+			# 院牆只畫看得見的前側兩面；左前一座開門樓，後方一座在院心種樹
+			var rx := quad % 2
+			var ry := quad / 2
+			var wc := Color(0.93, 0.91, 0.86)
+			if quad == 0:
+				tree_round(ci, P(c, 0.5, 0.5), 0.95, v)
+			if rx == 1:
+				box(ci, c + iso(0.47, 0), 0.03, 0.5, 8, wc, 0, true, false)
+				roof(ci, c + iso(0.47, 0), 0.03, 0.5, 8, 2.5, ROOF_G, "gable", false, 0.02, 0.0)
+			if ry == 1:
+				box(ci, c + iso(0, 0.47), 0.5, 0.03, 8, wc, 0, true, false)
+				roof(ci, c + iso(0, 0.47), 0.5, 0.03, 8, 2.5, ROOF_G, "gable", true, 0.02, 0.0)
+			if quad == 2:
+				var g := c + iso(0.12, 0.47)
+				box(ci, g, 0.13, 0.06, 13, wc)
+				face_l(ci, g, 0.13, 0.06, 0.25, 0.75, 0, 9, RED.darkened(0.15))
+				roof(ci, g, 0.15, 0.08, 13, 6, ROOF_G, "gable", true, 0.04, 1.5)
+				lantern(ci, P(g, -0.1, 0.1, 13))
+				lantern(ci, P(g, 0.1, 0.1, 13))
+		"fansha":
+			if btype == "temple":
+				# 殿前香爐煙起，門外兩竿經幡
+				var cp := P(c, 0.35, 0.35, 13)
+				for k in 7:
+					ell(ci, cp + Vector2(k * 1.6 + sin(k * 1.3) * 2.0, -k * 6.0), 3.0 + k * 0.9, 2.4 + k * 0.6, Color(0.9, 0.9, 0.88, 0.55 - k * 0.07))
+				for k in 2:
+					var bp := P(c, 1.02, 0.55) if k == 0 else P(c, 0.55, 1.02)
+					ci.draw_line(bp, bp - Vector2(0, 46), WOOD.darkened(0.35), 1.6)
+					var col: Color = [Color(0.92, 0.75, 0.25), RED][k]
+					poly(ci, [bp - Vector2(0, 45), bp + Vector2(5, -45), bp + Vector2(6, -14), bp + Vector2(2.5, -17), bp + Vector2(0, -14)], col)
+			elif btype == "pagoda":
+				# 每層簷角掛風鈴
+				var z := 4.0
+				for k in 7:
+					var a := 0.3 - k * 0.028
+					z += 11.0 - k * 0.7
+					for q in [P(c, a + 0.09, a + 0.09, z), P(c, -a - 0.09, a + 0.09, z), P(c, a + 0.09, -a - 0.09, z)]:
+						ci.draw_line(q, q + Vector2(0, 2.5), INK, 0.8)
+						ci.draw_circle(q + Vector2(0, 3.5), 1.2, GOLD)
+					z += 2.0
+		"yashu":
+			if btype == "yamen":
+				# 門前照壁、兩根旗杆
+				var sw := c + iso(0, 1.5)
+				box(ci, sw, 0.42, 0.05, 14, RED.darkened(0.15))
+				roof(ci, sw, 0.44, 0.07, 14, 5, ROOF_G, "hip", true, 0.03, 1.5)
+				var fc := fpt(sw, 0.42, 0.05, 0.5, 7.5, true)
+				ell(ci, fc, 5.0, 3.6, GOLD.darkened(0.1))
+				ell(ci, fc, 3.2, 2.2, RED.darkened(0.2))
+				for sgn in [-1.0, 1.0]:
+					var bp := P(c, sgn * 0.62, 1.12)
+					ci.draw_line(bp, bp - Vector2(0, 50), INK, 1.6)
+					ci.draw_line(bp - Vector2(3, 34), bp - Vector2(-3, 34), INK, 1.2)
+					poly(ci, [bp - Vector2(0, 49), bp + Vector2(6, -49), bp + Vector2(6, -24), bp + Vector2(0, -27)], RED)
+			elif btype == "archway":
+				# 坊頂紮紅綢彩球
+				var t := P(c, 0, 0, 41)
+				ci.draw_circle(t, 4.2, Color(0.88, 0.16, 0.12))
+				ci.draw_circle(t + Vector2(-1.2, -1.2), 1.6, Color(1.0, 0.45, 0.35))
+				for sgn in [-1.0, 1.0]:
+					line(ci, [t + Vector2(sgn * 3, 1), t + Vector2(sgn * 10, 5), t + Vector2(sgn * 14, 12)], Color(0.88, 0.16, 0.12), 1.6)
+		"sangji":
+			if btype == "mulberry":
+				# 龍骨水車：斜槽與踏輪
+				var wp := P(c, 0.42, 0.4)
+				line(ci, [wp, wp + Vector2(-14, -8)], WOOD, 2.2)
+				for k in 5:
+					var q := wp.lerp(wp + Vector2(-14, -8), k / 4.0)
+					ci.draw_line(q, q + Vector2(0, -2.5), WOOD.darkened(0.3), 1.0)
+				var wc2 := wp + Vector2(-15, -11)
+				var ring := []
+				for k in 13:
+					ring.append(wc2 + Vector2(cos(k * TAU / 12), sin(k * TAU / 12)) * 4.0)
+				line(ci, ring, WOOD.darkened(0.3), 1.4)
+				for k in 4:
+					var ang := k * PI / 4
+					ci.draw_line(wc2 - Vector2(cos(ang), sin(ang)) * 4, wc2 + Vector2(cos(ang), sin(ang)) * 4, WOOD.darkened(0.3), 1.0)
+		"chama":
+			if btype == "station":
+				# 馱茶馬隊，紅旗書「茶」
+				for k in 3:
+					var hp := P(c, 0.05 + k * 0.17, 0.5)
+					var hc: Color = [Color(0.45, 0.3, 0.2), Color(0.3, 0.22, 0.17), Color(0.6, 0.45, 0.3)][k]
+					_horse(ci, hp, hc)
+					ci.draw_rect(Rect2(hp + Vector2(-3, -11), Vector2(7, 4)), Color(0.35, 0.5, 0.3))
+					ci.draw_rect(Rect2(hp + Vector2(-3, -11), Vector2(7, 4)), Color(0.2, 0.3, 0.18), false, 0.8)
+				var fp := P(c, -0.45, 0.45)
+				ci.draw_line(fp, fp - Vector2(0, 30), INK, 1.5)
+				poly(ci, [fp - Vector2(0, 30), fp - Vector2(-12, 28), fp - Vector2(-12, 18), fp - Vector2(0, 20)], RED)
+				label(ci, fp - Vector2(-6, 24), "茶", 8, Color(0.98, 0.92, 0.8))
+			elif btype == "tea":
+				for k in 3:
+					var q := P(c, -0.2 + k * 0.2, 0.42)
+					ell(ci, q + Vector2(0, -3), 3.0, 3.4, Color(0.62, 0.45, 0.25))
+					ell(ci, q + Vector2(0, -6), 2.6, 1.2, Color(0.35, 0.55, 0.3))
+		"guanyao":
+			if btype == "kiln":
+				# 窯煙兩柱、成品架、黃旗書「官」
+				for col in [Vector2(0.47, -0.12), Vector2(0.1, -0.1)]:
+					var sp := P(c, col.x, col.y, 32 if col.x > 0.3 else 18)
+					for k in 6:
+						ell(ci, sp + Vector2(k * 2.0, -k * 7.0), 3.0 + k, 2.4 + k * 0.7, Color(0.75, 0.75, 0.75, 0.5 - k * 0.07))
+				box(ci, c + iso(-0.3, 0.45), 0.16, 0.05, 3, WOOD, 0, true, false)
+				for k in 4:
+					var q := P(c, -0.42 + k * 0.08, 0.45, 3)
+					ell(ci, q - Vector2(0, 3), 2.2, 3.0, Color(0.92, 0.94, 0.96))
+					ci.draw_line(q - Vector2(1.6, 3.5), q - Vector2(-1.6, 3.5), Color(0.25, 0.4, 0.75), 1.2)
+				var fp := P(c, -0.5, -0.1)
+				ci.draw_line(fp, fp - Vector2(0, 34), INK, 1.5)
+				poly(ci, [fp - Vector2(0, 34), fp - Vector2(-12, 32), fp - Vector2(-12, 22), fp - Vector2(0, 24)], Color(0.92, 0.75, 0.25))
+				label(ci, fp - Vector2(-6, 28), "官", 8, RED.darkened(0.2))
+			elif btype == "quarry":
+				for k in 4:
+					box(ci, c + iso(0.25 + (k % 2) * 0.1, 0.4 - (k / 2) * 0.1), 0.04, 0.04, 3.5, Color(0.95, 0.94, 0.9), (k / 2) * 3.5, true, false)
 
 
+## 格局成立後畫在建築底下的部分（如桑基魚塘的塘）。
+static func combo_under(ci, kind: String, c: Vector2, v: int, btype: String = "") -> void:
+	if kind == "sangji" and btype == "mulberry":
+		for i in 2:
+			for j in 2:
+				var q := c + iso(-0.18 + i * 0.3, -0.18 + j * 0.3)
+				poly(ci, [P(q, 0, -0.1), P(q, 0.1, 0), P(q, 0, 0.1), P(q, -0.1, 0)], WATER.lightened(0.05))
+				ci.draw_circle(P(q, 0.02, 0.01) + Vector2(1, 0), 0.9, Color(0.85, 0.5, 0.3))
+
+
+## 傘：竿、傘面分瓣明暗。
 static func _parasol(ci, base: Vector2, h: float, r: float, col: Color) -> void:
 	var top := base - Vector2(0, h)
 	ci.draw_line(base, top, WOOD.darkened(0.3), 1.4)

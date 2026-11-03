@@ -1293,6 +1293,41 @@ func _check_combos() -> void:
 			if store and water:
 				counts["caoyun"] = counts.get("caoyun", 0) + 1
 				member[b.id] = "caoyun"
+	# 四合院：四座瓦屋以上的民居排成二乘二；quad 記其在院中的位置
+	var quad := {}
+	for b in buildings.values():
+		if b.type != "house" or b.level < 2 or member.has(b.id):
+			continue
+		var cells := [Vector2i(b.x, b.y), Vector2i(b.x + 1, b.y), Vector2i(b.x, b.y + 1), Vector2i(b.x + 1, b.y + 1)]
+		var group := []
+		for q in cells:
+			var o := building_at(q.x, q.y)
+			if o.is_empty() or o.type != "house" or o.level < 2 or member.has(o.id):
+				break
+			group.append(o)
+		if group.size() == 4:
+			counts["siheyuan"] = counts.get("siheyuan", 0) + 1
+			for k in 4:
+				member[group[k].id] = "siheyuan"
+				quad[group[k].id] = k
+	# 其餘以「甲建築若干格內有乙建築」成立
+	var pairs := [["fansha", "temple", ["pagoda"], 3], ["yashu", "yamen", ["archway"], 3], ["sangji", "mulberry", ["fishery"], 3],
+		["chama", "tea", ["station"], 5], ["guanyao", "kiln", ["quarry"], 4]]
+	for pr in pairs:
+		for b in buildings.values():
+			if b.type != pr[1]:
+				continue
+			var mates := []
+			for o in _near_buildings(Vector2i(b.x, b.y), pr[3] + b.size - 1):
+				if o.type in pr[2]:
+					mates.append(o)
+			if mates.is_empty():
+				continue
+			counts[pr[0]] = counts.get(pr[0], 0) + 1
+			member[b.id] = pr[0]
+			for o in mates:
+				if not member.has(o.id):
+					member[o.id] = pr[0]
 	for i in combo_tiles:
 		if not tiles.has(i):
 			dirty[i] = true
@@ -1302,8 +1337,10 @@ func _check_combos() -> void:
 	combo_tiles = tiles
 	for b in buildings.values():
 		var m: String = member.get(b.id, "")
-		if b.get("combo", "") != m:
+		var qv: int = quad.get(b.id, -1)
+		if b.get("combo", "") != m or b.get("quad", -1) != qv:
 			b.combo = m
+			b.quad = qv
 			mark_b(b)
 	combo_count = counts
 	for id in counts:

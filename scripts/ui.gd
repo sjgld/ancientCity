@@ -1048,7 +1048,7 @@ func _combo_card(c: Dictionary) -> Control:
 	t.add_child(head)
 	var n: int = Game.combo_count.get(c.id, 0)
 	if found:
-		t.add_child(_label("%s 成　城中現有 %d 處　每處月入 %d 兩" % [Game.combos_found[c.id].split(" ")[0], n, c.income], 13, UIArt.INK_3, "num"))
+		t.add_child(_label("%s成　現有 %d 處　每處月入 %d 兩" % [Game.combos_found[c.id].split(" ")[0], n, c.income], 13, UIArt.INK_3, "num"))
 	v.add_child(_label(c.verse, 17, UIArt.INK_2 if found else UIArt.INK_3))
 	var body := _label(c.text if found else "尚未成局。", 15, INK if found else UIArt.INK_3)
 	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -1836,12 +1836,16 @@ class ComboArt extends Control:
 	func _init() -> void:
 		custom_minimum_size = Vector2(190, 130)
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		clip_contents = true
 
 	func _draw() -> void:
 		var r := Rect2(Vector2.ZERO, size)
 		draw_rect(r, Color("dfe3d3"))
 		var c := size * 0.5 + Vector2(0, 18)
-		draw_set_transform(c, 0.0, Vector2(0.62, 0.62))
+		var sc: float = {"fansha": 0.46, "yashu": 0.46, "hongqiao": 0.62, "siheyuan": 0.8, "wazi": 0.7}.get(combo_id, 0.95)
+		if combo_id in ["fansha", "yashu"]:
+			c.y += 14
+		draw_set_transform(c, 0.0, Vector2(sc, sc))
 		var water := Color("8fb0b2")
 		match combo_id:
 			"hongqiao":
@@ -1853,17 +1857,50 @@ class ComboArt extends Control:
 				Art.building(self, "shop", Art.iso(2.1, 0.6), 1, 4)
 			"wazi":
 				Art.building(self, "shop", Art.iso(-1.0, 0.1), 2, 2)
-				Art.combo_deco(self, "wazi", Art.iso(-1.0, 0.1), 1, 0)
+				Art.combo_deco(self, "wazi", Art.iso(-1.0, 0.1), 1, 0, "shop")
 				Art.building(self, "theater", Vector2.ZERO, 1, 1)
-				Art.combo_deco(self, "wazi", Vector2.ZERO, 1, 1)
+				Art.combo_deco(self, "wazi", Vector2.ZERO, 1, 1, "theater")
 				Art.building(self, "shop", Art.iso(0.2, 1.1), 3, 4)
-				Art.combo_deco(self, "wazi", Art.iso(0.2, 1.1), 1, 2)
+				Art.combo_deco(self, "wazi", Art.iso(0.2, 1.1), 1, 2, "shop")
 			"caoyun":
 				var band := PackedVector2Array([Art.iso(0.2, -2.0), Art.iso(2.2, -2.0), Art.iso(2.2, 2.0), Art.iso(0.2, 2.0)])
 				draw_colored_polygon(band, water)
 				Art.building(self, "granary", Art.iso(-1.0, -0.4), 1, 1)
 				Art.dock(self, Vector2.ZERO, 1, Vector2i(1, 0))
-				Art.combo_deco(self, "caoyun", Vector2.ZERO, 1, 1)
+				Art.combo_deco(self, "caoyun", Vector2.ZERO, 1, 1, "dock")
+			"siheyuan":
+				var qs := [Vector2(-0.5, -0.5), Vector2(0.5, -0.5), Vector2(-0.5, 0.5), Vector2(0.5, 0.5)]
+				for k in 4:
+					var p := Art.iso(qs[k].x, qs[k].y)
+					Art.building(self, "house", p, 2, k * 3)
+					Art.combo_deco(self, "siheyuan", p, 1, 2, "house", k)
+			"fansha":
+				Art.building(self, "temple", Art.iso(-0.4, 0.1), 1, 1)
+				Art.combo_deco(self, "fansha", Art.iso(-0.4, 0.1), 2, 1, "temple")
+				Art.building(self, "pagoda", Art.iso(1.6, -0.9), 1, 1)
+				Art.combo_deco(self, "fansha", Art.iso(1.6, -0.9), 1, 1, "pagoda")
+			"yashu":
+				Art.building(self, "yamen", Art.iso(-0.4, -0.6), 1, 1)
+				Art.combo_deco(self, "yashu", Art.iso(-0.4, -0.6), 2, 1, "yamen")
+				Art.building(self, "archway", Art.iso(1.7, 1.2), 1, 0)
+				Art.combo_deco(self, "yashu", Art.iso(1.7, 1.2), 1, 0, "archway")
+			"sangji":
+				var band := PackedVector2Array([Art.iso(0.6, -1.6), Art.iso(2.2, -1.6), Art.iso(2.2, 1.6), Art.iso(0.6, 1.6)])
+				draw_colored_polygon(band, water)
+				Art.combo_under(self, "sangji", Art.iso(-0.4, 0), 1, "mulberry")
+				Art.building(self, "mulberry", Art.iso(-0.4, 0), 1, 1)
+				Art.combo_deco(self, "sangji", Art.iso(-0.4, 0), 1, 1, "mulberry")
+				Art.building(self, "fishery", Art.iso(0.7, 0.3), 1, 1)
+			"chama":
+				Art.building(self, "tea", Art.iso(-0.9, -0.4), 1, 1)
+				Art.combo_deco(self, "chama", Art.iso(-0.9, -0.4), 1, 1, "tea")
+				Art.building(self, "station", Art.iso(0.6, 0.4), 1, 1)
+				Art.combo_deco(self, "chama", Art.iso(0.6, 0.4), 1, 1, "station")
+			"guanyao":
+				Art.building(self, "quarry", Art.iso(-1.2, -0.5), 1, 1)
+				Art.combo_deco(self, "guanyao", Art.iso(-1.2, -0.5), 1, 1, "quarry")
+				Art.building(self, "kiln", Art.iso(0.4, 0.3), 1, 1)
+				Art.combo_deco(self, "guanyao", Art.iso(0.4, 0.3), 1, 1, "kiln")
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 		if not found:
 			draw_rect(r, Color(UIArt.PAPER, 0.62))

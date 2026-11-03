@@ -464,6 +464,8 @@ class ObjChunk extends Node2D:
 		if b.age < 6 and b.type != "farm" and b.type != "yamen" and b.type != "town":
 			Art.scaffold(cv, c)
 			return
+		if b.get("combo", "") != "":
+			Art.combo_under(cv, b.combo, c, v, b.type)
 		match b.type:
 			"dock":
 				var wd := Vector2i(1, 0)
@@ -479,7 +481,7 @@ class ObjChunk extends Node2D:
 			_:
 				Art.building(cv, b.type, c, b.level, v)
 		if b.get("combo", "") != "":
-			Art.combo_deco(cv, b.combo, c, b.size, v)
+			Art.combo_deco(cv, b.combo, c, b.size, v, b.type, b.get("quad", -1))
 
 
 # ───────────────────────── 車船行人 ─────────────────────────
