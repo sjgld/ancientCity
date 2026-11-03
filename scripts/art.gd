@@ -1342,6 +1342,97 @@ static func bridge(ci, c: Vector2, ax_x: bool, stone: bool) -> void:
 		ci.draw_line(q, q + Vector2(0, 3), col.darkened(0.3), 1.0)
 
 
+## 虹橋：整段橋面依拱線抬起，橋下木樑交錯成拱，兩側欄杆，橋上有攤販。k 為本格在橋中的序，n 為橋長。
+static func rainbow_bridge(ci, c: Vector2, ax_x: bool, k: int, n: int, v: int) -> void:
+	var wd := 0.24
+	var H := clampf(6.0 + n * 4.0, 10.0, 24.0)
+	var f := func(u: float, w: float, h: float) -> Vector2:
+		return P(c, u, w, h) if ax_x else P(c, w, u, h)
+	var hh := func(u: float) -> float:
+		return 4.0 + H * sin(PI * (k + u + 0.5) / n)
+	var steps := 6
+	var us := []
+	for j in steps + 1:
+		us.append(-0.5 + float(j) / steps)
+	var wood := Color(0.5, 0.33, 0.2)
+	# 遠側欄杆
+	var far := []
+	for u in us:
+		far.append(f.call(u, -wd, hh.call(u) + 5))
+	line(ci, far, wood.darkened(0.2), 1.2)
+	# 橋下木拱（兩側各兩道，之間交錯斜撐）
+	for w in [-wd, wd]:
+		var r0 := []
+		var r1 := []
+		for u in us:
+			r0.append(f.call(u, w, hh.call(u) - 2.5))
+			r1.append(f.call(u, w, maxf(hh.call(u) - 8.0, 0.0)))
+		line(ci, r0, wood.darkened(0.35), 2.0)
+		line(ci, r1, wood.darkened(0.25), 2.0)
+		for j in steps:
+			ci.draw_line(r0[j], r1[j + 1], wood.darkened(0.15), 1.2)
+			ci.draw_line(r1[j], r0[j + 1], wood.darkened(0.15), 1.2)
+	# 橋面
+	var top := []
+	for u in us:
+		top.append(f.call(u, -wd, hh.call(u)))
+	for j in range(steps, -1, -1):
+		top.append(f.call(us[j], wd, hh.call(us[j])))
+	poly(ci, top, WOOD_L.lightened(0.05))
+	var side := []
+	for u in us:
+		side.append(f.call(u, wd, hh.call(u)))
+	for j in range(steps, -1, -1):
+		side.append(f.call(us[j], wd, hh.call(us[j]) - 2.5))
+	poly(ci, side, wood.darkened(0.1))
+	# 橋上攤販
+	if n >= 3 and k % 2 == 1:
+		_parasol(ci, f.call(0.0, -0.08, hh.call(0.0)), 10, 7, [Color(0.93, 0.88, 0.74), RED][v % 2])
+	# 近側欄杆
+	var near := []
+	for j in steps + 1:
+		var u: float = us[j]
+		var q: Vector2 = f.call(u, wd, hh.call(u))
+		if j % 2 == 0:
+			ci.draw_line(q, q - Vector2(0, 5), wood.darkened(0.3), 1.2)
+		near.append(q - Vector2(0, 5))
+	line(ci, near, wood.darkened(0.3), 1.4)
+
+
+## 格局成立後加在建築上的點綴。
+static func combo_deco(ci, kind: String, c: Vector2, size: int, v: int) -> void:
+	match kind:
+		"wazi":
+			# 簷下張掛成串燈籠與彩旗
+			var a := 0.42 * size
+			var hgt := 19.0
+			var corners := [P(c, -a, a, hgt), P(c, a, a, hgt), P(c, a, -a, hgt)]
+			for e in 2:
+				var p0: Vector2 = corners[e]
+				var p1: Vector2 = corners[e + 1]
+				var pts := []
+				for j in 9:
+					var t := j / 8.0
+					pts.append(p0.lerp(p1, t) + Vector2(0, sin(t * PI) * 4.0))
+				line(ci, pts, INK, 0.8)
+				for j in range(1, 8, 2):
+					var q: Vector2 = pts[j]
+					ell(ci, q + Vector2(0, 2.4), 1.7, 2.1, Color(0.95, 0.25, 0.12))
+					ci.draw_line(q + Vector2(-1, 0.6), q + Vector2(1, 0.6), GOLD, 0.8)
+				for j in range(2, 8, 2):
+					var q: Vector2 = pts[j]
+					poly(ci, [q, q + Vector2(3, 0.5), q + Vector2(0.5, 4)], [GOLD, Color(0.3, 0.55, 0.4), Color(0.3, 0.45, 0.7)][(j / 2 + v) % 3])
+		"caoyun":
+			# 多泊一艘漕船，岸上堆糧袋，立「漕」字旗
+			_boat(ci, P(c, 0.75, 0.55), true)
+			for j in 5:
+				ell(ci, P(c, -0.3 + (j % 3) * 0.09, 0.42) + Vector2(0, -2.5 - (j / 3) * 3.5), 3.0, 2.4, Color(0.86, 0.78, 0.55))
+			var fp := P(c, -0.42, 0.1)
+			ci.draw_line(fp, fp - Vector2(0, 34), INK, 1.5)
+			poly(ci, [fp - Vector2(0, 34), fp - Vector2(-12, 32), fp - Vector2(-12, 22), fp - Vector2(0, 24)], RED)
+			label(ci, fp - Vector2(-6, 28), "漕", 8, Color(0.98, 0.92, 0.8))
+
+
 static func _parasol(ci, base: Vector2, h: float, r: float, col: Color) -> void:
 	var top := base - Vector2(0, h)
 	ci.draw_line(base, top, WOOD.darkened(0.3), 1.4)

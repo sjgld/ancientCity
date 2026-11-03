@@ -426,7 +426,11 @@ class ObjChunk extends Node2D:
 			elif g.road[i] > 0:
 				if g.terrain[i] == Defs.T.WATER:
 					var ax: bool = (g.inb(x + 1, y) and g.road[g.idx(x + 1, y)] > 0) or (g.inb(x - 1, y) and g.road[g.idx(x - 1, y)] > 0)
-					Art.bridge(cv, c, ax, g.road[i] == 2)
+					if g.combo_tiles.has(i):
+						var sp: Array = g.combo_tiles[i]
+						Art.rainbow_bridge(cv, c, ax, sp[0], sp[1], v)
+					else:
+						Art.bridge(cv, c, ax, g.road[i] == 2)
 			else:
 				var t: int = g.terrain[i]
 				if t == Defs.T.FOREST:
@@ -474,6 +478,8 @@ class ObjChunk extends Node2D:
 				Art.town(cv, c, b.name)
 			_:
 				Art.building(cv, b.type, c, b.level, v)
+		if b.get("combo", "") != "":
+			Art.combo_deco(cv, b.combo, c, b.size, v)
 
 
 # ───────────────────────── 車船行人 ─────────────────────────

@@ -6,6 +6,7 @@ signal rank_changed(r: int)
 signal map_reset
 signal month_passed
 signal quest_done(id: String)
+signal combo_found(id: String)
 
 const WorldGen = preload("res://scripts/worldgen.gd")
 const DIRS: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
@@ -66,6 +67,9 @@ var goods_ratio := 1.0
 var ws_supplied := 0.0
 var log_lines: Array = []
 var quests_done := {}
+var combos_found := {}    # 已成之格局：id → 日期
+var combo_tiles := {}     # 虹橋橋面：格索引 → [序, 長]
+var combo_count := {}     # 各格局現存處數
 var history: Array = []
 
 var dirty := {}
@@ -210,6 +214,9 @@ func _reset() -> void:
 	food_short = 0.0
 	log_lines = []
 	quests_done = {}
+	combos_found = {}
+	combo_tiles = {}
+	combo_count = {}
 	history = []
 	dirty = {}
 	burning = {}
@@ -235,6 +242,7 @@ func _finish_setup() -> void:
 	_update_connectivity()
 	_compute_cover()
 	recount()
+	_check_combos()
 	for i in N * N:
 		dirty[i] = true
 	running = true
@@ -787,6 +795,7 @@ func _daily() -> void:
 	_update_fires()
 	_grow()
 	if day % 5 == 0:
+		_check_combos()
 		recount()
 		_check_quests()
 	if day >= 30:
@@ -1020,6 +1029,11 @@ func _economy() -> void:
 	inc["工稅"] = ind_output * 0.8 * tax.ind / 10.0 * tm
 	inc["田賦"] = grain_made * 0.25 * tax.farm / 10.0 * tm
 	inc["貿易"] = trade_month
+	var ci := 0.0
+	for k in combo_count:
+		ci += Defs.combo(k).get("income", 0) * combo_count[k]
+	if ci > 0:
+		inc["格局"] = ci
 	trade_month = 0.0
 	var outg := {"建築維護": 0.0, "道路城牆": 0.0, "車船": 0.0, "政令": 0.0}
 	for b in buildings.values():
@@ -1203,6 +1217,100 @@ func _check_rank() -> void:
 		connectivity_dirty = true
 		log_msg("聖旨到！%s人丁興旺，升格為「%s」，賞銀%d兩。" % [city_name, rank_name(), rw], 1)
 		rank_changed.emit(rank)
+
+
+# ───────────────────────── 格局 ─────────────────────────
+
+## 與 cell 相距 r 格內（含建築占地）的建築。
+func _near_buildings(cell: Vector2i, r: int) -> Array:
+	var res := []
+	for b in buildings.values():
+		var dx := maxi(0, maxi(b.x - cell.x, cell.x - (b.x + b.size - 1)))
+		var dy := maxi(0, maxi(b.y - cell.y, cell.y - (b.y + b.size - 1)))
+		if maxi(dx, dy) <= r:
+			res.append(b)
+	return res
+
+
+func _is_bridge(x: int, y: int) -> bool:
+	return inb(x, y) and road[idx(x, y)] > 0 and terrain[idx(x, y)] == Defs.T.WATER
+
+
+## 檢查各處格局：成立者標記於建築（b.combo）或橋面（combo_tiles），首次成立時收入圖鑑。
+func _check_combos() -> void:
+	var tiles := {}
+	var counts := {}
+	var member := {}
+	# 虹橋：沿橋走向找出整段橋面，看兩頭的市肆
+	var seen := {}
+	for i in N * N:
+		if seen.has(i) or road[i] == 0 or terrain[i] != Defs.T.WATER:
+			continue
+		var x := i % N
+		var y := i / N
+		var d := Vector2i(1, 0) if (_is_bridge(x + 1, y) or _is_bridge(x - 1, y)) else Vector2i(0, 1)
+		var s := Vector2i(x, y)
+		while _is_bridge(s.x - d.x, s.y - d.y):
+			s -= d
+		var span := []
+		var p := s
+		while _is_bridge(p.x, p.y):
+			span.append(idx(p.x, p.y))
+			seen[idx(p.x, p.y)] = true
+			p += d
+		if span.size() < 2:
+			continue
+		var shops := {}
+		for e in [s - d, p]:
+			for b in _near_buildings(e, 3):
+				if b.type == "shop":
+					shops[b.id] = true
+		if shops.size() >= 2:
+			for k in span.size():
+				tiles[span[k]] = [k, span.size()]
+			counts["hongqiao"] = counts.get("hongqiao", 0) + 1
+	# 瓦子、漕運
+	for b in buildings.values():
+		if b.type == "theater":
+			var near := []
+			for o in _near_buildings(Vector2i(b.x, b.y), 3):
+				if o.type == "shop" and o.level >= 2:
+					near.append(o)
+			if near.size() >= 2:
+				counts["wazi"] = counts.get("wazi", 0) + 1
+				member[b.id] = "wazi"
+				for o in near:
+					member[o.id] = "wazi"
+		elif b.type == "dock":
+			var store := false
+			for o in _near_buildings(Vector2i(b.x, b.y), 3):
+				if o.type in ["granary", "warehouse"]:
+					store = true
+			var water := false
+			for r in routes.values():
+				if r.mode == "water" and (r.a == b.id or r.b == b.id):
+					water = true
+			if store and water:
+				counts["caoyun"] = counts.get("caoyun", 0) + 1
+				member[b.id] = "caoyun"
+	for i in combo_tiles:
+		if not tiles.has(i):
+			dirty[i] = true
+	for i in tiles:
+		if not combo_tiles.has(i):
+			dirty[i] = true
+	combo_tiles = tiles
+	for b in buildings.values():
+		var m: String = member.get(b.id, "")
+		if b.get("combo", "") != m:
+			b.combo = m
+			mark_b(b)
+	combo_count = counts
+	for id in counts:
+		if not combos_found.has(id):
+			combos_found[id] = date_str()
+			log_msg("格局成立：「%s」。%s" % [Defs.combo(id).name, Defs.combo(id).verse], 1)
+			combo_found.emit(id)
 
 
 # ───────────────────────── 詔令 ─────────────────────────
@@ -1809,7 +1917,7 @@ func save_game() -> bool:
 		"next_id": next_id, "next_route": next_route, "next_veh": next_veh, "yamen_id": yamen_id,
 		"station_count": station_count, "city_name": city_name, "era": era, "year": year, "month": month,
 		"day": day, "rank": rank, "money": money, "stock": stock, "policies": policies, "tax": tax,
-		"stats": stats, "drought": drought, "log": log_lines, "quests": quests_done, "history": history, "seed": map_seed, "rng": rng.state,
+		"stats": stats, "drought": drought, "log": log_lines, "quests": quests_done, "combos": combos_found, "history": history, "seed": map_seed, "rng": rng.state,
 	}
 	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
 	if f == null:
@@ -1860,6 +1968,7 @@ func load_game() -> bool:
 	drought = d.drought
 	log_lines = d.log
 	quests_done = d.get("quests", {})
+	combos_found = d.get("combos", {})
 	history = d.get("history", [])
 	map_seed = d.seed
 	rng.state = d.rng

@@ -17,7 +17,7 @@ const CATS := [
 	{"id": "deco", "icon": "deco", "name": "景觀"},
 	{"id": "view", "icon": "layer", "name": "圖層"},
 ]
-const BOOK_TABS := [["policy", "政務", "gov"], ["stock", "倉廩", "store"], ["routes", "商路", "route"], ["stats", "年鑑", "chart"], ["help", "須知", "bookmark"]]
+const BOOK_TABS := [["policy", "政務", "gov"], ["stock", "倉廩", "store"], ["routes", "商路", "route"], ["stats", "年鑑", "chart"], ["combos", "圖鑑", "deco"], ["help", "須知", "bookmark"]]
 const SEASON_ICON := ["spring", "summer", "autumn", "winter"]
 const COVER_NAME := {"water": "水", "health": "醫", "security": "治安", "fire": "防火", "edu": "教化", "faith": "信仰", "fun": "娛樂"}
 
@@ -73,6 +73,7 @@ var chart: Chart
 var music_on := true
 var menu_panel: PanelContainer
 var music_btn: MenuRow
+var dock_btns := {}
 
 
 func _ready() -> void:
@@ -97,6 +98,7 @@ func _ready() -> void:
 	Game.rank_changed.connect(_on_rank)
 	Game.month_passed.connect(func(): main.world.overlay.queue_redraw())
 	Game.quest_done.connect(func(_id): Sfx.play("coin"))
+	Game.combo_found.connect(_on_combo)
 
 
 # ───────────────────────── 樣式 ─────────────────────────
@@ -209,11 +211,12 @@ func _build_top() -> void:
 	var dock := HBoxContainer.new()
 	dock.add_theme_constant_override("separation", 2)
 	h.add_child(dock)
-	for w in BOOK_TABS.slice(0, 4):
+	for w in BOOK_TABS.slice(0, 5):
 		var d := DockButton.new()
 		d.label = w[1]
 		d.kind = w[2]
-		d.tooltip_text = {"policy": "政務：稅率、政令、收支", "stock": "倉廩：各色貨物存量", "routes": "商路：路線與車船", "stats": "年鑑：歷月走勢"}[w[0]]
+		d.tooltip_text = {"policy": "政務：稅率、政令、收支", "stock": "倉廩：各色貨物存量", "routes": "商路：路線與車船", "stats": "年鑑：歷月走勢", "combos": "圖鑑：城中已成的格局"}[w[0]]
+		dock_btns[w[0]] = d
 		d.pressed.connect(func():
 			Sfx.play("click")
 			open_window(w[0]))
@@ -849,6 +852,9 @@ func open_window(id: String) -> void:
 
 func _show_page(id: String) -> void:
 	cur_win = id
+	if dock_btns.has(id) and dock_btns[id].badge:
+		dock_btns[id].badge = false
+		dock_btns[id].queue_redraw()
 	for k in windows:
 		windows[k].visible = k == id
 		mark_btns[k].on = k == id
@@ -1013,6 +1019,51 @@ func _fill_window(id: String, full: bool = false) -> void:
 				return
 			_clear(body)
 			body.add_child(_rich(_help_text()))
+		"combos":
+			if not full:
+				return
+			_clear(body)
+			body.add_child(_rich("[color=#5d5147]把特定的建築擺在一起，就會形成古代城市裡的經典格局：外觀隨之改變，每月另有收入。已成%s種，共%s種。[/color]" % [Defs.cn_num(Game.combos_found.size()), Defs.cn_num(Defs.COMBOS.size())]))
+			for c in Defs.COMBOS:
+				body.add_child(_combo_card(c))
+
+
+## 圖鑑中的一則格局：左圖右文；未成者圖淡去，並寫明條件。
+func _combo_card(c: Dictionary) -> Control:
+	var found: bool = Game.combos_found.has(c.id)
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", 18)
+	var art := ComboArt.new()
+	art.combo_id = c.id
+	art.found = found
+	h.add_child(art)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 3)
+	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	h.add_child(v)
+	var t := HBoxContainer.new()
+	v.add_child(t)
+	var head := _label(c.name, 24, INK if found else UIArt.INK_3, "title")
+	head.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	t.add_child(head)
+	var n: int = Game.combo_count.get(c.id, 0)
+	if found:
+		t.add_child(_label("%s 成　城中現有 %d 處　每處月入 %d 兩" % [Game.combos_found[c.id].split(" ")[0], n, c.income], 13, UIArt.INK_3, "num"))
+	v.add_child(_label(c.verse, 17, UIArt.INK_2 if found else UIArt.INK_3))
+	var body := _label(c.text if found else "尚未成局。", 15, INK if found else UIArt.INK_3)
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.custom_minimum_size = Vector2(560, 0)
+	v.add_child(body)
+	v.add_child(_label("條件：" + c.rule, 14, UIArt.SHIQING if not found else UIArt.INK_3))
+	return h
+
+
+func _on_combo(id: String) -> void:
+	Sfx.play("gong")
+	banner("格局成立：%s" % Defs.combo(id).name)
+	if dock_btns.has("combos"):
+		dock_btns["combos"].badge = true
+		dock_btns["combos"].queue_redraw()
 
 
 func _update_budget(body: Control) -> void:
@@ -1446,6 +1497,7 @@ class SpeedButton extends Button:
 class DockButton extends Button:
 	var kind := ""
 	var label := ""
+	var badge := false
 
 	func _init() -> void:
 		focus_mode = Control.FOCUS_NONE
@@ -1459,6 +1511,8 @@ class DockButton extends Button:
 			draw_rect(Rect2(Vector2.ZERO, size), Color(1, 1, 1, 0.08))
 		UIArt.icon(self, kind, Rect2(size.x * 0.5 - 11, 3, 22, 22), UIArt.IVORY)
 		UIArt.text_c(self, UIArt.font("body"), Vector2(size.x * 0.5, 36), label, 12, UIArt.IVORY if hov else UIArt.IVORY_2)
+		if badge:
+			draw_circle(Vector2(size.x * 0.5 + 12, 6), 4.0, UIArt.BAD_W)
 
 
 ## 系統選單鍵。
@@ -1772,6 +1826,51 @@ class LogStrip extends Control:
 			UIArt.text_l(self, nf, 34, y, l.date, 12, Color(UIArt.INK_3, a))
 			draw_string(f, Vector2(76, y + (f.get_ascent(15) - f.get_descent(15)) * 0.5), l.text, HORIZONTAL_ALIGNMENT_LEFT, size.x - 88, 15, Color(col, a))
 			y -= 25.0
+
+
+## 圖鑑插圖：以遊戲本身的畫法畫出格局的小景。
+class ComboArt extends Control:
+	var combo_id := ""
+	var found := false
+
+	func _init() -> void:
+		custom_minimum_size = Vector2(190, 130)
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	func _draw() -> void:
+		var r := Rect2(Vector2.ZERO, size)
+		draw_rect(r, Color("dfe3d3"))
+		var c := size * 0.5 + Vector2(0, 18)
+		draw_set_transform(c, 0.0, Vector2(0.62, 0.62))
+		var water := Color("8fb0b2")
+		match combo_id:
+			"hongqiao":
+				var band := PackedVector2Array([Art.iso(-1.5, -1.5), Art.iso(1.5, -1.5), Art.iso(1.5, 1.5), Art.iso(-1.5, 1.5)])
+				draw_colored_polygon(band, water)
+				Art.building(self, "shop", Art.iso(-2.1, -0.6), 1, 3)
+				for k in 3:
+					Art.rainbow_bridge(self, Art.iso(k - 1, 0), true, k, 3, 1)
+				Art.building(self, "shop", Art.iso(2.1, 0.6), 1, 4)
+			"wazi":
+				Art.building(self, "shop", Art.iso(-1.0, 0.1), 2, 2)
+				Art.combo_deco(self, "wazi", Art.iso(-1.0, 0.1), 1, 0)
+				Art.building(self, "theater", Vector2.ZERO, 1, 1)
+				Art.combo_deco(self, "wazi", Vector2.ZERO, 1, 1)
+				Art.building(self, "shop", Art.iso(0.2, 1.1), 3, 4)
+				Art.combo_deco(self, "wazi", Art.iso(0.2, 1.1), 1, 2)
+			"caoyun":
+				var band := PackedVector2Array([Art.iso(0.2, -2.0), Art.iso(2.2, -2.0), Art.iso(2.2, 2.0), Art.iso(0.2, 2.0)])
+				draw_colored_polygon(band, water)
+				Art.building(self, "granary", Art.iso(-1.0, -0.4), 1, 1)
+				Art.dock(self, Vector2.ZERO, 1, Vector2i(1, 0))
+				Art.combo_deco(self, "caoyun", Vector2.ZERO, 1, 1)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		if not found:
+			draw_rect(r, Color(UIArt.PAPER, 0.62))
+			UIArt.seal_outline(self, Rect2(size.x - 30, 6, 24, 24), "未")
+		else:
+			UIArt.seal(self, Rect2(size.x - 32, 6, 26, 26), "成", -0.12)
+		draw_rect(r.grow(-0.5), Color(UIArt.INK, 0.35), false, 1.0)
 
 
 class MiniMap extends Control:

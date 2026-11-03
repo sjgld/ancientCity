@@ -158,6 +158,24 @@ const TOWNS := [
 	{"name": "成都", "mult": {"iron": 1.5, "ware": 1.4, "porcelain": 1.3, "stone": 1.2}},
 ]
 
+# 格局：特定建築擺在一起即成立，外形隨之改變，並收入圖鑑。史實從寬，重在畫面與氛圍。
+# income：每處每月額外收入（兩）
+const COMBOS := [
+	{"id": "hongqiao", "name": "虹橋", "income": 30,
+		"verse": "飛梁跨汴，舟過其下，市在其上。",
+		"text": "《清明上河圖》正中那座橋。不立橋柱，以短木交錯疊成拱，大船可直接從橋下駛過；橋面兩側擺滿攤販，是全城最熱鬧的地方。",
+		"rule": "跨水兩格以上的橋，兩頭三格內共有兩家以上市肆"},
+	{"id": "wazi", "name": "瓦子", "income": 25,
+		"verse": "勾欄瓦舍，燈火通宵。",
+		"text": "宋代城裡的娛樂區。勾欄裡說書、雜劇、傀儡戲輪番上演，周圍酒樓茶肆林立，入夜張燈結綵，是市民的夜生活所在。",
+		"rule": "戲樓三格內有兩家商號或酒樓"},
+	{"id": "caoyun", "name": "漕運", "income": 40,
+		"verse": "千艘銜尾，歲漕百萬。",
+		"text": "汴河連接江南與京城，南方的糧米經漕船源源北上。碼頭邊倉廒林立，縴夫、腳夫、帳房日夜不停，是一座城的命脈。",
+		"rule": "碼頭三格內有糧倉或貨棧，且碼頭開有水路"},
+]
+
+
 # 詔令：依序達成，可得賞銀
 const QUESTS := [
 	{"id": "res", "text": "劃設民居十格", "reward": 200},
@@ -213,3 +231,10 @@ static func cargo_name(c: String) -> String:
 
 static func season_of(month: int) -> int:
 	return month / 3
+
+
+static func combo(id: String) -> Dictionary:
+	for c in COMBOS:
+		if c.id == id:
+			return c
+	return {}
