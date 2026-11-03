@@ -3,6 +3,7 @@ extends Node2D
 
 const Art = preload("res://scripts/art.gd")
 const Batch = preload("res://scripts/batch.gd")
+const UIArt = preload("res://scripts/ui_art.gd")
 const CH := 10
 const SEG := 16
 const ROLE_NEAR := {
@@ -21,6 +22,7 @@ var objects: Node2D
 var ground_root: Node2D
 var overlay: Overlay
 var fx: FX
+var anim: AnimLayer
 var ground_chunks: Array = []
 var obj_chunks := {}
 var movers := {}
@@ -71,6 +73,12 @@ func setup(camera: Camera2D) -> void:
 	fx = FX.new()
 	fx.view = self
 	add_child(fx)
+	anim = AnimLayer.new()
+	anim.view = self
+	add_child(anim)
+	Game.anim_hide.clear()
+	if not Game.building_fx.is_connected(_on_building_fx):
+		Game.building_fx.connect(_on_building_fx)
 	last_season = -1
 
 
@@ -145,7 +153,7 @@ func _update_walkers(delta: float) -> void:
 		for i in Game.N * Game.N:
 			if Game.road[i] > 0 and Game.terrain[i] != Defs.T.WATER and Game.conn_road(i):
 				road_cells.append(i)
-	var want := mini(70, int(Game.stats.pop / 12))
+	var want := mini(150, int(Game.stats.pop / 7))
 	if road_cells.is_empty():
 		want = 0
 	while walkers.size() < want:
@@ -172,6 +180,10 @@ func _update_walkers(delta: float) -> void:
 			w.queue_free()
 			continue
 		var spd: float = spd0 * w.pace
+		if w.wait > 0.0:
+			# 駐足：在店前看貨、在路口閒談
+			w.wait -= delta * maxf(1.0, Game.SPEEDS[Game.speed]) if Game.speed > 0 else 0.0
+			continue
 		var tgt := Vector2(w.target)
 		var d: Vector2 = tgt - w.fpos
 		if d.length() > 0.001 and spd > 0:
@@ -196,10 +208,23 @@ func _update_walkers(delta: float) -> void:
 					opts.append(n)
 			w.prev = w.tile
 			w.target = opts[randi() % opts.size()] if opts.size() > 0 else w.prev
+			if randf() < 0.18 and _near_shop(w.tile):
+				w.wait = randf_range(1.0, 2.5)
+				w.ph = 0.0
+				w.frame = -1
+				w.queue_redraw()
 		else:
 			w.fpos += d.normalized() * spd
 		var p: Vector2 = w.fpos + w.off
 		w.position = tile_pos(p.x, p.y) + Vector2(0, 1)
+
+
+func _near_shop(t: Vector2i) -> bool:
+	for d in Game.DIRS:
+		var b := Game.building_at(t.x + d.x, t.y + d.y)
+		if not b.is_empty() and b.type in ["shop", "theater", "well", "temple"]:
+			return true
+	return false
 
 
 ## 依出生處附近之建築定行人身分：田邊多農夫，作坊碼頭多挑夫，寺前有僧，衙前有官。
@@ -306,7 +331,11 @@ class GroundChunk extends Node2D:
 					if g.inb(nx, ny) and g.terrain[g.idx(nx, ny)] == Defs.T.WATER and g.canal[g.idx(nx, ny)] == 0:
 						_edge(c, d, 0.14, Color(0.82, 0.76, 0.6) if sea != 3 else Color(0.9, 0.9, 0.88))
 				var bid: int = g.bld[i]
-				if bid >= 0:
+				if g.combo_ground.has(i) and g.road[i] == 0:
+					_paving(x, y, c, g.combo_ground[i])
+					if bid >= 0 and g.buildings[bid].type == "farm":
+						_field(c, g.buildings[bid].level, g.tree_var[i])
+				elif bid >= 0:
 					var b: Dictionary = g.buildings[bid]
 					if b.type == "farm":
 						_field(c, b.level, g.tree_var[i])
@@ -319,6 +348,28 @@ class GroundChunk extends Node2D:
 					cv.draw_polyline(pts, Color(zc, 0.7), 1.0)
 				if g.road[i] > 0:
 					_road(x, y, c, g.road[i])
+
+	const PAVE := {"siheyuan": Color(0.78, 0.76, 0.71), "fansha": Color(0.84, 0.74, 0.52), "yashu": Color(0.72, 0.71, 0.68),
+		"wazi": Color(0.76, 0.6, 0.5), "caoyun": Color(0.7, 0.58, 0.42), "sangji": Color(0.64, 0.72, 0.52),
+		"chama": Color(0.74, 0.66, 0.5), "guanyao": Color(0.8, 0.7, 0.6)}
+
+	## 格局範圍內的鋪地：整片石板，外緣壓一道深色路緣，看得出是一處院落或街區。
+	func _paving(x: int, y: int, c: Vector2, kind: String) -> void:
+		var g = Game
+		var col: Color = PAVE.get(kind, Color(0.75, 0.72, 0.66))
+		if Game.season() == 3:
+			col = col.lerp(Color(0.93, 0.93, 0.92), 0.35)
+		_inset(c, 0.5, col)
+		var lc := col.darkened(0.12)
+		for k in range(1, 3):
+			var t := -0.5 + k / 3.0
+			cv.draw_line(c + Art.iso(-0.5, t), c + Art.iso(0.5, t), lc, 1.0)
+			cv.draw_line(c + Art.iso(t + (0.08 if k == 1 else -0.08), -0.5), c + Art.iso(t + (0.08 if k == 1 else -0.08), 0.5), lc, 1.0)
+		for d in Game.DIRS:
+			var nx: int = x + d.x
+			var ny: int = y + d.y
+			if not (g.inb(nx, ny) and g.combo_ground.get(g.idx(nx, ny), "") == kind):
+				_edge(c, d, 0.06, col.darkened(0.35))
 
 	func WorldView_tile(x: float, y: float) -> Vector2:
 		return Vector2((x - y) * 32.0, (x + y) * 16.0)
@@ -419,7 +470,7 @@ class ObjChunk extends Node2D:
 			var v: int = g.tree_var[i]
 			if bid >= 0:
 				var b: Dictionary = g.buildings[bid]
-				if b.x + b.size - 1 == x and b.y + b.size - 1 == y:
+				if b.x + b.size - 1 == x and b.y + b.size - 1 == y and not g.anim_hide.has(bid):
 					_building(b)
 			elif g.wall[i] > 0:
 				_wall(x, y, c)
@@ -482,6 +533,11 @@ class ObjChunk extends Node2D:
 				Art.building(cv, b.type, c, b.level, v)
 		if b.get("combo", "") != "":
 			Art.combo_deco(cv, b.combo, c, b.size, v, b.type, b.get("quad", -1))
+		if b.size == 1 and b.age >= 6 and b.type in ["house", "shop"] and b.get("combo", "") != "siheyuan":
+			for d in [Vector2i(1, 0), Vector2i(0, 1)]:
+				var nb := Game.building_at(b.x + d.x, b.y + d.y)
+				if not nb.is_empty() and nb.type == b.type and nb.age >= 6 and nb.get("combo", "") != "siheyuan":
+					Art.link(cv, c, d, b.type, mini(b.level, nb.level))
 
 
 # ───────────────────────── 車船行人 ─────────────────────────
@@ -505,6 +561,7 @@ class Mover extends Node2D:
 	var frame := -1
 	var front := true
 	var flip := false
+	var wait := 0.0
 
 	func _draw() -> void:
 		if kind == "walker":
@@ -570,6 +627,11 @@ class FX extends Node2D:
 					match b.type:
 						"kiln":
 							smokes.append(c + Art.iso(0.42, -0.15) - Vector2(0, 30))
+							if b.get("combo", "") == "guanyao":
+								smokes.append(c + Art.iso(0.1, -0.1) - Vector2(0, 18))
+						"temple":
+							if b.get("combo", "") == "fansha":
+								smokes.append(c + Art.iso(0.85, 0.85) - Vector2(0, 16))
 						"workshop":
 							if b.level == 2:
 								smokes.append(c + Art.iso(0.13, -0.15) - Vector2(0, 26))
@@ -612,9 +674,210 @@ class FX extends Node2D:
 					draw_circle(Vector2(px, py), 1.6, Color(0.96, 0.7, 0.78, 0.8))
 
 
+func _on_building_fx(id: int, kind: String) -> void:
+	if anim == null or not Game.buildings.has(id):
+		return
+	anim.trigger(Game.buildings[id], kind)
+
+
 func view_rect() -> Rect2:
 	var vs := get_viewport_rect().size / cam.zoom
 	return Rect2(cam.get_screen_center_position() - vs * 0.5, vs).grow(40)
+
+
+# ───────────────────────── 建造動畫 ─────────────────────────
+
+## 建築落成、升級時由地面「長」起來（暫由此層繪製），並有塵土、金光、浮字；工地上有匠人敲打。
+class AnimLayer extends Node2D:
+	const RISE := 0.6
+	var view
+	var rising := {}      # id → 已過時間
+	var bursts: Array = []  # {pos, kind, t, text}
+	var scaffolds: Array = []
+	var scan_t := 0.0
+	var t := 0.0
+
+	func _ready() -> void:
+		z_index = 4
+
+	static func center(b: Dictionary) -> Vector2:
+		var h: float = (b.size - 1) * 0.5
+		return Vector2((b.x + h - b.y - h) * 32.0, (b.x + h + b.y + h) * 16.0)
+
+	func trigger(b: Dictionary, kind: String) -> void:
+		var c := center(b)
+		if not view.view_rect().grow(200).has_point(c):
+			return
+		match kind:
+			"placed":
+				bursts.append({"pos": c, "kind": "dust", "t": 0.0, "text": ""})
+			"built", "upgrade":
+				if b.type not in ["dock", "town", "yamen", "farm"]:
+					rising[b.id] = 0.0
+					Game.anim_hide[b.id] = true
+					Game.mark_b(b)
+				bursts.append({"pos": c, "kind": "dust", "t": 0.0, "text": ""})
+				if kind == "upgrade":
+					var names: Array = Defs.GROW[b.type].get("names", []) if Defs.GROW.has(b.type) else []
+					var nm: String = names[b.level - 1] if b.level - 1 < names.size() else ""
+					bursts.append({"pos": c, "kind": "rise", "t": 0.0, "text": "升為" + nm if nm != "" else "升級"})
+				if kind == "upgrade":
+					Sfx.play("coin")
+			"combo":
+				var nm: String = Defs.combo(b.combo).get("name", "")
+				for e in bursts:
+					if e.kind == "combo" and e.text.ends_with(nm) and e.pos.distance_to(c) < 260 and e.t < 0.5:
+						e.ring.append(c)
+						return
+				bursts.append({"pos": c, "kind": "combo", "t": 0.0, "text": "格局 · " + nm, "ring": [c]})
+
+	func _process(delta: float) -> void:
+		t += delta
+		var done := []
+		for id in rising:
+			rising[id] += delta
+			if rising[id] >= RISE or not Game.buildings.has(id):
+				done.append(id)
+		for id in done:
+			rising.erase(id)
+			Game.anim_hide.erase(id)
+			if Game.buildings.has(id):
+				Game.mark_b(Game.buildings[id])
+		for e in bursts:
+			e.t += delta
+		bursts = bursts.filter(func(e): return e.t < (2.2 if e.kind != "dust" else 0.9))
+		scan_t -= delta
+		if scan_t <= 0:
+			scan_t = 0.5
+			scaffolds.clear()
+			var vr: Rect2 = view.view_rect()
+			if view.cam.zoom.x >= 0.7:
+				for b in Game.buildings.values():
+					if b.age < 6 and b.type not in ["farm", "yamen", "town"]:
+						var c := center(b)
+						if vr.has_point(c):
+							scaffolds.append([c, b.id])
+		queue_redraw()
+
+	func _draw() -> void:
+		for id in rising:
+			if not Game.buildings.has(id):
+				continue
+			var b: Dictionary = Game.buildings[id]
+			var p: float = clampf(rising[id] / RISE, 0.0, 1.0)
+			var c1 := 1.70158
+			var e := 1.0 + (c1 + 1.0) * pow(p - 1.0, 3) + c1 * pow(p - 1.0, 2)
+			var sy := maxf(0.05, e)
+			var sx := lerpf(0.86, 1.0, minf(1.0, p * 1.4))
+			var c := center(b)
+			var v: int = Game.tree_var[Game.idx(b.x, b.y)]
+			draw_set_transform(c, 0.0, Vector2(sx, sy))
+			if b.get("combo", "") != "":
+				Art.combo_under(self, b.combo, Vector2.ZERO, v, b.type)
+			Art.building(self, b.type, Vector2.ZERO, b.level, v)
+			if b.get("combo", "") != "":
+				Art.combo_deco(self, b.combo, Vector2.ZERO, b.size, v, b.type, b.get("quad", -1))
+			draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		for sc in scaffolds:
+			_workers(sc[0], sc[1])
+		_garlands()
+		var f := UIArt.font("title")
+		for e in bursts:
+			var c: Vector2 = e.pos
+			match e.kind:
+				"dust":
+					var p: float = e.t / 0.9
+					for k in 8:
+						var ang := k * TAU / 8.0 + 0.3
+						var q := c + Vector2(cos(ang) * 30.0, sin(ang) * 15.0) * (0.4 + p)
+						draw_circle(q + Vector2(0, -p * 6.0), 4.0 + p * 6.0, Color(0.82, 0.76, 0.64, 0.55 * (1.0 - p)))
+				"rise":
+					var p: float = e.t / 2.2
+					for k in 10:
+						var ph := fmod(p * 1.6 + k * 0.137, 1.0)
+						var q := c + Vector2(sin(k * 2.3) * 22.0, -20.0 - ph * 50.0)
+						draw_circle(q, 2.2 * (1.0 - ph) + 0.6, Color(1.0, 0.84, 0.35, (1.0 - ph) * (1.0 - p)))
+					_float_text(f, c + Vector2(0, -56 - p * 30.0), e.text, 20, Color(UIArt.NIJIN.darkened(0.2), 1.0 - p * p))
+				"combo":
+					var p: float = e.t / 2.2
+					for q in e.ring:
+						var r := 20.0 + p * 70.0
+						var pts := PackedVector2Array()
+						for k in 33:
+							var ang := k * TAU / 32.0
+							pts.append(q + Vector2(cos(ang) * r, sin(ang) * r * 0.5))
+						draw_polyline(pts, Color(1.0, 0.82, 0.35, 0.9 * (1.0 - p)), 3.0, true)
+					_float_text(f, c + Vector2(0, -70 - p * 26.0), e.text, 24, Color(UIArt.ZHU, 1.0 - p * p))
+
+	## 瓦子：成員之間牽起成串燈籠，隨風輕擺。
+	func _garlands() -> void:
+		if view.cam.zoom.x < 0.6:
+			return
+		var vr: Rect2 = view.view_rect()
+		for gp in Game.combo_groups:
+			if gp.id != "wazi":
+				continue
+			var rest := []
+			for id in gp.members:
+				if Game.buildings.has(id):
+					rest.append(center(Game.buildings[id]) - Vector2(0, 22))
+			# 由戲樓起，每次接到最近的一家，至多四段，成一條街上的燈串
+			var chain := [rest.pop_front()]
+			rest = rest.filter(func(q): return q.distance_to(chain[0]) > 55)
+			while rest.size() > 0 and chain.size() < 4:
+				var last: Vector2 = chain[-1]
+				var bi := 0
+				for j in rest.size():
+					if last.distance_to(rest[j]) < last.distance_to(rest[bi]):
+						bi = j
+				if last.distance_to(rest[bi]) > 150:
+					break
+				var nxt: Vector2 = rest.pop_at(bi)
+				rest = rest.filter(func(q): return q.distance_to(nxt) > 55)
+				chain.append(nxt)
+			for k in range(1, chain.size()):
+				var a: Vector2 = chain[k - 1]
+				var b: Vector2 = chain[k]
+				if not vr.has_point(a) and not vr.has_point(b):
+					continue
+				var sway := sin(t * 1.8 + k) * 2.0
+				var line := PackedVector2Array()
+				for j in 13:
+					var u := j / 12.0
+					line.append(a.lerp(b, u) + Vector2(0, sin(u * PI) * (10.0 + sway)))
+				draw_polyline(line, Color(0.2, 0.15, 0.12, 0.8), 1.0, true)
+				for j in range(1, 12, 2):
+					var q: Vector2 = line[j]
+					var sw := sin(t * 2.6 + j + k) * 1.2
+					draw_line(q, q + Vector2(sw, 3), Color(0.2, 0.15, 0.12, 0.8), 0.8)
+					var lc := Vector2(q.x + sw, q.y + 5.5)
+					draw_circle(lc, 2.3, Color(0.94, 0.24, 0.12))
+					draw_circle(lc + Vector2(-0.7, -0.7), 0.9, Color(1.0, 0.6, 0.35))
+
+	func _float_text(f: Font, at: Vector2, text: String, size: int, col: Color) -> void:
+		var w := f.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+		var r := Rect2(at - Vector2(w * 0.5 + 8, size * 0.85), Vector2(w + 16, size * 1.3))
+		draw_rect(r, Color(UIArt.PAPER, col.a * 0.92))
+		draw_rect(r, Color(UIArt.INK, col.a * 0.5), false, 1.0)
+		draw_string(f, Vector2(at.x - w * 0.5, at.y + size * 0.15), text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, col)
+
+	## 工地兩名匠人揮錘，錘落時揚起一點木屑。
+	func _workers(c: Vector2, id: int) -> void:
+		var speed: float = maxf(1.0, Game.SPEEDS[Game.speed]) if Game.speed > 0 else 0.0
+		for k in 2:
+			var at := c + Art.iso(-0.34 + k * 0.62, 0.34 - k * 0.1)
+			var ph := fmod(t * 1.6 * speed + k * 0.5 + id * 0.17, 1.0)
+			Art.figure(self, ["porter", "farmer"][k], id + k, true, k == 1, 0.25, at)
+			draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+			var dirx := -1.0 if k == 1 else 1.0
+			var sh := at + Vector2(1.5 * dirx, -8.5)
+			var ang := lerpf(-2.2, -0.5, absf(sin(ph * PI))) if dirx > 0 else PI - lerpf(-2.2, -0.5, absf(sin(ph * PI)))
+			var tip := sh + Vector2(cos(ang), sin(ang)) * 8.0
+			draw_line(sh, tip, Art.WOOD, 1.4)
+			draw_line(tip - Vector2(cos(ang + PI / 2), sin(ang + PI / 2)) * 2.0, tip + Vector2(cos(ang + PI / 2), sin(ang + PI / 2)) * 2.0, Color(0.3, 0.3, 0.32), 2.0)
+			if ph > 0.45 and ph < 0.6:
+				for j in 3:
+					draw_circle(tip + Vector2((j - 1) * 3.0, -2.0 - j), 1.2, Color(0.85, 0.75, 0.55, 0.8))
 
 
 # ───────────────────────── 資料圖層 ─────────────────────────

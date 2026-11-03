@@ -7,6 +7,7 @@ signal map_reset
 signal month_passed
 signal quest_done(id: String)
 signal combo_found(id: String)
+signal building_fx(id: int, kind: String)   # placed／built／upgrade／combo，供畫面播放動畫
 
 const WorldGen = preload("res://scripts/worldgen.gd")
 const DIRS: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
@@ -70,6 +71,9 @@ var quests_done := {}
 var combos_found := {}    # 已成之格局：id → 日期
 var combo_tiles := {}     # 虹橋橋面：格索引 → [序, 長]
 var combo_count := {}     # 各格局現存處數
+var combo_ground := {}    # 格局範圍內鋪地的格：索引 → 格局 id
+var combo_groups: Array = []  # 每處格局：{id, members}
+var anim_hide := {}       # 正在播放升起動畫、暫不由地圖分塊繪製的建築
 var history: Array = []
 
 var dirty := {}
@@ -217,6 +221,8 @@ func _reset() -> void:
 	combos_found = {}
 	combo_tiles = {}
 	combo_count = {}
+	combo_ground = {}
+	combo_groups = []
 	history = []
 	dirty = {}
 	burning = {}
@@ -266,6 +272,8 @@ func add_building(type: String, x: int, y: int, extra: Dictionary = {}) -> int:
 	buildings[b.id] = b
 	b.conn = _bconn(b)
 	mark_b(b)
+	if running and b.age < 6:
+		building_fx.emit(b.id, "placed")
 	return b.id
 
 
@@ -792,6 +800,7 @@ func _daily() -> void:
 		b.age += 1
 		if b.age == 6:
 			mark_b(b)
+			building_fx.emit(b.id, "built")
 	_update_fires()
 	_grow()
 	if day % 5 == 0:
@@ -1205,6 +1214,7 @@ func _upgrades() -> void:
 		if up and b.level < 3 and rng.randf() < chance:
 			b.level += 1
 			mark_b(b)
+			building_fx.emit(b.id, "upgrade")
 	if removed > 0:
 		log_msg("有%s戶人家不堪其苦，棄屋而去。" % Defs.cn_num(removed), 2)
 
@@ -1241,6 +1251,7 @@ func _check_combos() -> void:
 	var tiles := {}
 	var counts := {}
 	var member := {}
+	var groups := []
 	# 虹橋：沿橋走向找出整段橋面，看兩頭的市肆
 	var seen := {}
 	for i in N * N:
@@ -1281,11 +1292,14 @@ func _check_combos() -> void:
 				member[b.id] = "wazi"
 				for o in near:
 					member[o.id] = "wazi"
+				groups.append({"id": "wazi", "members": [b.id] + near.map(func(o): return o.id)})
 		elif b.type == "dock":
 			var store := false
+			var stores := []
 			for o in _near_buildings(Vector2i(b.x, b.y), 3):
 				if o.type in ["granary", "warehouse"]:
 					store = true
+					stores.append(o.id)
 			var water := false
 			for r in routes.values():
 				if r.mode == "water" and (r.a == b.id or r.b == b.id):
@@ -1293,6 +1307,7 @@ func _check_combos() -> void:
 			if store and water:
 				counts["caoyun"] = counts.get("caoyun", 0) + 1
 				member[b.id] = "caoyun"
+				groups.append({"id": "caoyun", "members": [b.id] + stores})
 	# 四合院：四座瓦屋以上的民居排成二乘二；quad 記其在院中的位置
 	var quad := {}
 	for b in buildings.values():
@@ -1310,6 +1325,7 @@ func _check_combos() -> void:
 			for k in 4:
 				member[group[k].id] = "siheyuan"
 				quad[group[k].id] = k
+			groups.append({"id": "siheyuan", "members": group.map(func(o): return o.id)})
 	# 其餘以「甲建築若干格內有乙建築」成立
 	var pairs := [["fansha", "temple", ["pagoda"], 3], ["yashu", "yamen", ["archway"], 3], ["sangji", "mulberry", ["fishery"], 3],
 		["chama", "tea", ["station"], 5], ["guanyao", "kiln", ["quarry"], 4]]
@@ -1328,6 +1344,38 @@ func _check_combos() -> void:
 			for o in mates:
 				if not member.has(o.id):
 					member[o.id] = pr[0]
+			groups.append({"id": pr[0], "members": [b.id] + mates.map(func(o): return o.id)})
+	# 格局範圍：成員所占之外接框內，非路非水的空地一併鋪地，使之連成一片
+	var ground := {}
+	for gp in groups:
+		var x0 := N
+		var y0 := N
+		var x1 := -1
+		var y1 := -1
+		for id in gp.members:
+			var mb: Dictionary = buildings[id]
+			x0 = mini(x0, mb.x)
+			y0 = mini(y0, mb.y)
+			x1 = maxi(x1, mb.x + mb.size - 1)
+			y1 = maxi(y1, mb.y + mb.size - 1)
+		if x1 - x0 > 7 or y1 - y0 > 7:
+			continue
+		for yy in range(y0, y1 + 1):
+			for xx in range(x0, x1 + 1):
+				var k := idx(xx, yy)
+				if road[k] > 0 or terrain[k] == Defs.T.WATER:
+					continue
+				if bld[k] >= 0 and not gp.members.has(bld[k]):
+					continue
+				ground[k] = gp.id
+	for k in combo_ground:
+		if ground.get(k, "") != combo_ground[k]:
+			dirty[k] = true
+	for k in ground:
+		if not combo_ground.has(k):
+			dirty[k] = true
+	combo_ground = ground
+	combo_groups = groups
 	for i in combo_tiles:
 		if not tiles.has(i):
 			dirty[i] = true
@@ -1339,9 +1387,12 @@ func _check_combos() -> void:
 		var m: String = member.get(b.id, "")
 		var qv: int = quad.get(b.id, -1)
 		if b.get("combo", "") != m or b.get("quad", -1) != qv:
+			var fresh: bool = m != "" and b.get("combo", "") != m
 			b.combo = m
 			b.quad = qv
 			mark_b(b)
+			if fresh:
+				building_fx.emit(b.id, "combo")
 	combo_count = counts
 	for id in counts:
 		if not combos_found.has(id):
@@ -1857,7 +1908,7 @@ func tile_info(x: int, y: int) -> String:
 		s += "城牆%s\n" % ("（城門）" if road[i] > 0 else "")
 	if zone[i] > 0:
 		s += "{i:zone} 分區 [b]%s[/b]\n" % Defs.ZONE_NAMES[zone[i]]
-	s += "{i:land} 地價 [b]%d[/b]　肥力 [b]%d%%[/b]\n" % [int(lv[i]), int(fert[i] * 100)]
+	s = "[stats]land,%d,地價;grain,%d%%,肥力[/stats]" % [int(lv[i]), int(fert[i] * 100)] + s
 	s += _cover_line(i)
 	return s
 
@@ -1894,8 +1945,8 @@ func building_info(b: Dictionary) -> String:
 		s += "{i:bad} [warn]未通達：須以道路連接縣衙[/warn]\n\n"
 	match b.type:
 		"house":
-			s += "{i:people} [n]%d[/n] 居民　{i:%s} [n]%d[/n] 民心　{i:land} [n]%d[/n] 地價\n" % [
-				Defs.GROW.house.pop[l], "mood_good" if b.happy >= 65 else ("mood_bad" if b.happy < 40 else "mood"), int(b.happy), int(lv[i])]
+			s += "[stats]people,%d,居民;%s,%d,民心,%s;land,%d,地價[/stats]" % [
+				Defs.GROW.house.pop[l], "mood_good" if b.happy >= 65 else ("mood_bad" if b.happy < 40 else "mood"), int(b.happy), C_BAD if b.happy < 40 else "", int(lv[i])]
 			if b.level < 3:
 				s += "\n" + _head("升為%s還缺" % Defs.GROW.house.names[b.level]) + "\n"
 				var rows := []
@@ -1911,16 +1962,16 @@ func building_info(b: Dictionary) -> String:
 				s += "[color=%s]已是最高一階。[/color]\n" % C_NOTE
 		"shop":
 			var gr := int(goods_ratio * 100)
-			s += "{i:people} [n]%d[/n] 伙計　{i:store} [color=%s][n]%d%%[/n][/color] 貨源　{i:land} [n]%d[/n] 地價\n" % [
-				Defs.GROW.shop.jobs[l], C_GOOD if gr >= 60 else C_BAD, gr, int(lv[i])]
+			s += "[stats]people,%d,伙計;store,%d%%,貨源,%s;land,%d,地價[/stats]" % [
+				Defs.GROW.shop.jobs[l], gr, C_GOOD if gr >= 60 else C_BAD, int(lv[i])]
 			if gr < 60:
 				s += "{i:hint} [b]貨源不足[/b]：多設[k]作坊[/k]，或經商路運入器物、綢緞。\n"
 		"workshop":
 			var ws := int(ws_supplied * 100)
-			s += "{i:people} [n]%d[/n] 匠人　{i:store} [color=%s][n]%d%%[/n][/color] 原料\n" % [Defs.GROW.workshop.jobs[l], C_GOOD if ws >= 50 else C_BAD, ws]
+			s += "[stats]people,%d,匠人;store,%d%%,原料,%s[/stats]" % [Defs.GROW.workshop.jobs[l], ws, C_GOOD if ws >= 50 else C_BAD]
 			s += "[k]絲[/k] → 綢緞　[k]鐵[/k]、[k]木[/k] → 器物\n[color=%s]無料時只能手作少量器物[/color]\n" % C_NOTE
 		"farm":
-			s += "{i:people} [n]%d[/n] 農人　{i:land} [n]%d%%[/n] 肥力　{i:grain} [n]%.0f[/n] 上月收成\n" % [Defs.GROW.farm.jobs[l], int(fert[i] * 100), b.last]
+			s += "[stats]people,%d,農人;land,%d%%,肥力;grain,%.0f,上月收成[/stats]" % [Defs.GROW.farm.jobs[l], int(fert[i] * 100), b.last]
 		"town":
 			var m: Dictionary = b.get("mult", {})
 			var parts := []
@@ -1929,15 +1980,18 @@ func building_info(b: Dictionary) -> String:
 			s += "收購一切貨物，[k]路途愈遠，獲利愈豐[/k]。\n{i:silver} 高價收購　%s\n" % "、".join(parts)
 		_:
 			var d: Dictionary = Defs.B.get(b.type, {})
-			s += "[color=#5d5147]%s[/color]\n" % d.get("desc", "")
+			var st := []
 			if d.has("produce"):
-				s += "{i:industry} [n]%.0f[/n] 上月產出\n" % b.last
-				if not b.conn:
-					s += "[color=%s]未通達縣衙，貨物須經驛站或碼頭外運。[/color]\n" % C_NOTE
+				st.append("industry,%.0f,上月產出" % b.last)
 			if d.get("jobs", 0) > 0:
-				s += "{i:people} [n]%d[/n] 職缺　" % d.jobs
+				st.append("people,%d,職缺" % d.jobs)
 			if d.upkeep > 0:
-				s += "{i:silver} [n]%d[/n] 月費\n" % d.upkeep
+				st.append("silver,%d,月費" % d.upkeep)
+			if not st.is_empty():
+				s += "[stats]%s[/stats]" % ";".join(st)
+			s += "[color=#5d5147]%s[/color]\n" % d.get("desc", "")
+			if d.has("produce") and not b.conn:
+				s += "[color=%s]未通達縣衙，貨物須經驛站或碼頭外運。[/color]\n" % C_NOTE
 	if b.get("combo", "") != "":
 		s += "\n{i:good} 格局「[k]%s[/k]」成立中\n" % Defs.combo(b.combo).get("name", "")
 	if not b.stock.is_empty():

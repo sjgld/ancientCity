@@ -93,12 +93,27 @@ func done_tool() -> void:
 
 # ───────────────────────── 城市規劃 ─────────────────────────
 
+## 街區寬窄不一：道路間距輪流取下表，街區內部有二、三、四格等大小，城市才不會是一格格棋盤。
+const SPAN := [4, 3, 5, 3, 4, 5]
+
+
+func _cum(i: int, phase: int) -> int:
+	var s := 0
+	if i >= 0:
+		for k in i:
+			s += SPAN[(k + phase) % SPAN.size()]
+	else:
+		for k in range(i, 0):
+			s -= SPAN[posmod(k + phase, SPAN.size())]
+	return s
+
+
 func gx(i: int) -> int:
-	return ox + 2 + 4 * i
+	return ox + 2 + _cum(i, 0)
 
 
 func gy(j: int) -> int:
-	return oy + 2 + 4 * j
+	return oy + 2 + _cum(j, 3)
 
 
 func build_block(b: Vector2i, z: int) -> void:
@@ -156,7 +171,7 @@ func block_info(b: Vector2i) -> Dictionary:
 			if t != Defs.T.HILL:
 				info.flat += 1
 				info.fert += Game.fert[i]
-	info.valid = info.buildable >= 6
+	info.valid = info.buildable >= 4
 	return info
 
 
@@ -178,7 +193,7 @@ func pick_block(z: int) -> Vector2i:
 			if not info.valid:
 				continue
 			# 轄境：街區中心沿路約在範圍之內
-			if (absi(gx(i) + 2 - ox) + absi(gy(j) + 2 - oy)) > Game.radius() - 4:
+			if (absi((gx(i) + gx(i + 1)) / 2 - ox) + absi((gy(j) + gy(j + 1)) / 2 - oy)) > Game.radius() - 4:
 				continue
 			var score := 0.0
 			match z:

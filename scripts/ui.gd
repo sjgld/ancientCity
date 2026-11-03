@@ -40,6 +40,7 @@ var tool_group := ButtonGroup.new()
 var info_panel: PanelContainer
 var info_title: Label
 var info_body: RichTextLabel
+var info_stats: StatTiles
 var info_btns: HBoxContainer
 var log_panel: LogStrip
 var toast_panel: PanelContainer
@@ -216,6 +217,22 @@ func _markup(text: String, big: int) -> String:
 		else:
 			out += "[/color][/b]" if (stack.pop_back() if stack.size() > 0 else false) else "[/b]"
 	return out + text.substr(pos)
+
+
+var _stats_re := RegEx.create_from_string("\\[stats\\](.*?)\\[/stats\\]\\n?")
+
+
+## 冊頁內容：[stats] 段落畫成數值磚，其餘交給 RichTextLabel。
+func _set_info(text: String) -> void:
+	var m := _stats_re.search(text)
+	var tiles := []
+	if m:
+		for e in m.get_string(1).split(";"):
+			var f := e.split(",")
+			tiles.append({"icon": f[0], "value": f[1], "label": f[2], "color": f[3] if f.size() > 3 else ""})
+		text = text.substr(0, m.get_start()) + text.substr(m.get_end())
+	info_stats.set_tiles(tiles)
+	set_rich(info_body, text.strip_edges(), 24)
 
 
 ## 文中小標題。
@@ -618,6 +635,8 @@ func _build_info() -> void:
 	cb.add_theme_color_override("font_hover_color", INK)
 	cb.add_theme_font_size_override("font_size", 14)
 	h.add_child(cb)
+	info_stats = StatTiles.new()
+	v.add_child(info_stats)
 	info_body = RichTextLabel.new()
 	info_body.bbcode_enabled = true
 	info_body.fit_content = true
@@ -642,7 +661,7 @@ func show_info() -> void:
 		var v: Dictionary = Game.vehicles[vid]
 		info_panel.visible = true
 		info_title.text = Defs.VEHICLES[v.kind]["name"]
-		set_rich(info_body, _vehicle_text(v))
+		_set_info(_vehicle_text(v))
 		info_btns.add_child(_button("查看商路", func(): open_window("routes")))
 		info_btns.add_child(_button("賣出", func():
 			Game.vehicles.erase(vid)
@@ -658,7 +677,7 @@ func show_info() -> void:
 		info_title.text = Game.bname(b)
 		if b.type == "yamen":
 			info_title.text = "%s%s" % [Game.city_name, ["里署", "鎮署", "縣衙", "州衙", "府衙", "皇城"][Game.rank]]
-		set_rich(info_body, _yamen_text() if b.type == "yamen" else Game.building_info(b))
+		_set_info(_yamen_text() if b.type == "yamen" else Game.building_info(b))
 		if Game.is_stop(b):
 			info_btns.add_child(_button("由此開闢商路", func():
 				main.set_tool("route")
@@ -678,7 +697,7 @@ func show_info() -> void:
 	if Game.inb(t.x, t.y):
 		info_panel.visible = true
 		info_title.text = "地塊"
-		set_rich(info_body, Game.tile_info(t.x, t.y))
+		_set_info(Game.tile_info(t.x, t.y))
 		info_panel.reset_size()
 		return
 	info_panel.visible = false
@@ -698,16 +717,15 @@ func _vehicle_text(v: Dictionary) -> String:
 		t += "，前往 [b]%s[/b]" % Game.bname(Game.buildings[v.to])
 	t += "\n"
 	if v.amt > 0:
-		t += "{i:store} 載 [k]%s[/k] [n]%d[/n]／%d\n" % [Defs.cargo_name(v.cargo), int(v.amt), d.cap]
+		t = "[stats]store,%d／%d,載%s;road,%.1f,每日格數;silver,%d,月費[/stats]" % [int(v.amt), d.cap, Defs.cargo_name(v.cargo), d.speed, d.upkeep] + t
 	else:
-		t += "{i:store} [color=#8b7d6e]空載[/color]　容量 [b]%d[/b]\n" % d.cap
-	t += "每日 [b]%.1f[/b] 格　　{i:silver} 月費 [b]%d[/b] 兩" % [d.speed, d.upkeep]
+		t = "[stats]store,0／%d,空載;road,%.1f,每日格數;silver,%d,月費[/stats]" % [d.cap, d.speed, d.upkeep] + t
 	return t
 
 
 func _yamen_text() -> String:
 	var s: Dictionary = Game.stats
-	var t := "{i:people} [n]%d[/n] 人丁　[n]%d[/n] 戶　{i:mood} [n]%d[/n] 民心\n" % [s.pop, s.houses, int(s.happy)]
+	var t := "[stats]people,%d,人丁;store,%d,戶數;mood,%d,民心[/stats]" % [s.pop, s.houses, int(s.happy)]
 	t += "勞力 [b]%d[/b]　職缺 [b]%d[/b]　到崗 [b]%d%%[/b]　失業 [color=%s][b]%d%%[/b][/color]\n" % [
 		s.labor, s.jobs, int(s.staff * 100), "#b1372a" if s.unemp > 0.15 else "#29241f", int(s.unemp * 100)]
 	t += "{i:road} 轄境：沿路 [b]%d[/b] 格內\n" % Game.radius()
@@ -836,7 +854,7 @@ func _process(delta: float) -> void:
 		_update_quests()
 		if info_panel.visible and main.selected_vehicle >= 0:
 			if Game.vehicles.has(main.selected_vehicle):
-				set_rich(info_body, _vehicle_text(Game.vehicles[main.selected_vehicle]))
+				_set_info(_vehicle_text(Game.vehicles[main.selected_vehicle]))
 			else:
 				main.selected_vehicle = -1
 				show_info()
@@ -844,7 +862,7 @@ func _process(delta: float) -> void:
 			var sel: int = main.selected
 			if sel >= 0 and Game.buildings.has(sel):
 				var b: Dictionary = Game.buildings[sel]
-				set_rich(info_body, _yamen_text() if b.type == "yamen" else Game.building_info(b))
+				_set_info(_yamen_text() if b.type == "yamen" else Game.building_info(b))
 			elif sel >= 0:
 				main.selected = -1
 				show_info()
@@ -1417,6 +1435,45 @@ func set_hover(text: String, at: Vector2) -> void:
 
 
 # ───────────────────────── 天頭元件 ─────────────────────────
+
+## 冊頁頂端的數值磚：每項一格，淡色底、左側色條、大圖示、大號數字、小字標籤。
+class StatTiles extends Control:
+	const TINT := {"people": "5b7fa3", "mood": "c9a23a", "mood_good": "4b8063", "mood_bad": "b1372a", "land": "7a9a52",
+		"silver": "a5854c", "grain": "c09a3a", "store": "8a6a4a", "industry": "6b6b70", "road": "8a6e48"}
+	var tiles: Array = []
+
+	func _init() -> void:
+		custom_minimum_size = Vector2(330, 0)
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	func set_tiles(t: Array) -> void:
+		tiles = t
+		custom_minimum_size.y = 58.0 if t.size() > 0 else 0.0
+		visible = t.size() > 0
+		queue_redraw()
+
+	func _draw() -> void:
+		var n := tiles.size()
+		if n == 0:
+			return
+		var gap := 6.0
+		var w := (size.x - gap * (n - 1)) / n
+		var nf := UIArt.font("title")
+		var bf := UIArt.font("body")
+		for k in n:
+			var tl: Dictionary = tiles[k]
+			var tint := Color(TINT.get(tl.icon, "8b7d6e"))
+			var r := Rect2(k * (w + gap), 0, w, 56)
+			draw_rect(r, Color(tint, 0.14))
+			draw_rect(Rect2(r.position, Vector2(4, r.size.y)), tint)
+			UIArt.icon(self, tl.icon, Rect2(r.position.x + 10, r.position.y + 13, 30, 30))
+			var vc: Color = Color(tl.color) if tl.color != "" else UIArt.INK
+			var fs := 22 if w > 96 else 19
+			while fs > 13 and nf.get_string_size(tl.value, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x > w - 50:
+				fs -= 1
+			UIArt.text_l(self, nf, r.position.x + 46, r.position.y + 21, tl.value, fs, vc)
+			UIArt.text_l(self, bf, r.position.x + 46, r.position.y + 42, tl.label, 12, UIArt.INK_2)
+
 
 ## 把行內圖示依序畫成一排，供圖集取用。
 class IconPainter extends Control:

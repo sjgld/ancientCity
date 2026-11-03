@@ -1454,9 +1454,6 @@ static func combo_deco(ci, kind: String, c: Vector2, size: int, v: int, btype: S
 		"fansha":
 			if btype == "temple":
 				# 殿前香爐煙起，門外兩竿經幡
-				var cp := P(c, 0.35, 0.35, 13)
-				for k in 7:
-					ell(ci, cp + Vector2(k * 1.6 + sin(k * 1.3) * 2.0, -k * 6.0), 3.0 + k * 0.9, 2.4 + k * 0.6, Color(0.9, 0.9, 0.88, 0.55 - k * 0.07))
 				for k in 2:
 					var bp := P(c, 1.02, 0.55) if k == 0 else P(c, 0.55, 1.02)
 					ci.draw_line(bp, bp - Vector2(0, 46), WOOD.darkened(0.35), 1.6)
@@ -1546,6 +1543,30 @@ static func combo_deco(ci, kind: String, c: Vector2, size: int, v: int, btype: S
 			elif btype == "quarry":
 				for k in 4:
 					box(ci, c + iso(0.25 + (k % 2) * 0.1, 0.4 - (k / 2) * 0.1), 0.04, 0.04, 3.5, Color(0.95, 0.94, 0.9), (k / 2) * 3.5, true, false)
+
+
+## 相鄰同類建築之間的連接：民居以粉牆相連成院，市肆以廊棚相連成街。d 指向鄰格。
+static func link(ci, c: Vector2, d: Vector2i, type: String, lvl: int) -> void:
+	var ax := d.x != 0
+	var m := c + iso(d.x * 0.5, d.y * 0.5)
+	if type == "house":
+		var wc := WALL_W if lvl >= 2 else WALL_M
+		var fr := m + (iso(0, 0.26) if ax else iso(0.26, 0))
+		var a := 0.2 if ax else 0.025
+		var b := 0.025 if ax else 0.2
+		box(ci, fr, a, b, 7, wc, 0, true, false)
+		roof(ci, fr, a, b, 7, 2.5, ROOF_G if lvl >= 2 else ROOF_T, "gable", ax, 0.02, 0.0)
+	else:
+		var fr := m + (iso(0, 0.2) if ax else iso(0.2, 0))
+		var a := 0.22 if ax else 0.12
+		var b := 0.12 if ax else 0.22
+		for s2 in [-1.0, 1.0]:
+			var q := P(fr, (s2 * a * 0.9) if ax else b * 0.8, (b * 0.8) if ax else s2 * a * 0.9)
+			ci.draw_line(q, q - Vector2(0, 10), WOOD.darkened(0.25), 1.5)
+		roof(ci, fr, a, b, 10, 4, ROOF_G, "gable", ax, 0.03, 0.5)
+		for k in 3:
+			var q := P(fr, (-0.12 + k * 0.12) if ax else b, b if ax else (-0.12 + k * 0.12), 8)
+			lantern(ci, q)
 
 
 ## 格局成立後畫在建築底下的部分（如桑基魚塘的塘）。
@@ -1902,7 +1923,7 @@ static func _arc(c: Vector2, r: float, a0: float, a1: float, n: int = 8) -> Arra
 
 ## 行人：腳底為原點，畫成向右行；flip 鏡像為向左，front 為面向鏡頭（否則見背影）。
 ## ph 為步伐相位（0..1）。
-static func figure(ci, role: String, v: int, front: bool, flip: bool, ph: float) -> void:
+static func figure(ci, role: String, v: int, front: bool, flip: bool, ph: float, at: Vector2 = Vector2.ZERO) -> void:
 	var k := 1.0
 	var lean := 0.0
 	match role:
@@ -1917,9 +1938,9 @@ static func figure(ci, role: String, v: int, front: bool, flip: bool, ph: float)
 	var s := sin(ph * TAU)
 	var lift := (1.0 - absf(s)) * 0.5
 	var ly := lift / k
-	ci.draw_set_transform(Vector2.ZERO, 0.0, Vector2(fx * k, k))
+	ci.draw_set_transform(at, 0.0, Vector2(fx * k, k))
 	ell(ci, Vector2(0, 0.2), 3.0, 1.1, Color(0.1, 0.08, 0.04, 0.2))
-	ci.draw_set_transform(Vector2(0, -lift), lean * fx, Vector2(fx * k, k))
+	ci.draw_set_transform(at + Vector2(0, -lift), lean * fx, Vector2(fx * k, k))
 	var cols: Array = FIG_COATS.get(role, FIG_COATS.farmer)
 	var coat: Color = cols[v % cols.size()]
 	var winter := season == 3
