@@ -1351,6 +1351,86 @@ static func bridge(ci, c: Vector2, ax_x: bool, stone: bool, ramp_neg: bool = fal
 		ci.draw_line(q, q + Vector2(0, 3), col.darkened(0.3), 1.0)
 
 
+## 石拱橋：江南常見的駝峰石橋，整段一次畫成。c 為最前一格的中心，n 為跨水格數。
+## 跨三格以內一孔，四到六格三孔，再長五孔；拱洞與水中倒影合成一圈。
+static func stone_arch(ci, c: Vector2, ax_x: bool, n: int, v: int) -> void:
+	var f := func(u: float, w: float, h: float) -> Vector2:
+		return P(c, u, w, h) if ax_x else P(c, w, u, h)
+	var u0 := -(n - 1) - 0.5 - 0.34
+	var u1 := 0.5 + 0.34
+	var span := u1 - u0
+	var H := clampf(8.0 + n * 6.0, 16.0, 36.0)
+	var deck := func(u: float) -> float:
+		var t := clampf((u - u0) / span, 0.0, 1.0)
+		return H * pow(sin(PI * t), 0.75)
+	var wd := 0.26
+	var stone := STONE.lightened(0.04)
+	var face := STONE.darkened(0.1)
+	var steps := 8 * n + 10
+	var us := []
+	for j in steps + 1:
+		us.append(lerpf(u0, u1, float(j) / steps))
+	# 兩岸金剛牆
+	for e in [u0 + 0.14, u1 - 0.14]:
+		var bc: Vector2 = f.call(e, 0.0, 0.0)
+		box(ci, bc, 0.15 if ax_x else wd + 0.04, wd + 0.04 if ax_x else 0.15, 3, face, -1.0, true, false)
+	# 遠側欄板
+	var far := []
+	for u in us:
+		far.append(f.call(u, -wd, deck.call(u) + 5.0))
+	line(ci, far, stone.darkened(0.3), 1.2)
+	for j in range(0, us.size(), 3):
+		ci.draw_line(f.call(us[j], -wd, deck.call(us[j])), far[j], stone.darkened(0.3), 1.0)
+	# 橋面（踏步）
+	var top := []
+	for u in us:
+		top.append(f.call(u, -wd, deck.call(u)))
+	for j in range(us.size() - 1, -1, -1):
+		top.append(f.call(us[j], wd, deck.call(us[j])))
+	var tcol := snowy(stone.lightened(0.08), 0.6)
+	poly(ci, top, tcol)
+	for j in range(1, steps, 2):
+		ci.draw_line(f.call(us[j], -wd, deck.call(us[j])), f.call(us[j], wd, deck.call(us[j])), tcol.darkened(0.14), 1.0)
+	# 近側橋身：橋面到水面
+	var body := []
+	for u in us:
+		body.append(f.call(u, wd, deck.call(u)))
+	body.append(f.call(u1, wd, -1.0))
+	body.append(f.call(u0, wd, -1.0))
+	poly(ci, body, face)
+	# 拱洞與倒影
+	var holes := 1 if n <= 3 else (3 if n <= 6 else 5)
+	var main_r := minf(span * 0.26, 1.2) if holes == 1 else span / (holes * 2.6)
+	for k in holes:
+		var off := float(k - (holes - 1) * 0.5)
+		var uc := (u0 + u1) * 0.5 + off * span / (holes + 0.6)
+		var rr: float = main_r * (1.0 if k == (holes - 1) / 2 else 0.72)
+		var rh: float = minf(H * 0.78, rr * 26.0) * (1.0 if k == (holes - 1) / 2 else 0.8)
+		var hole := []
+		var ring := []
+		var refl := []
+		for a in 13:
+			var th := PI * a / 12.0
+			hole.append(f.call(uc + cos(th) * rr, wd, sin(th) * rh))
+			ring.append(f.call(uc + cos(th) * (rr + 0.06), wd, sin(th) * (rh + 3.0)))
+			refl.append(f.call(uc + cos(th) * rr, wd, -sin(th) * rh * 0.8))
+		poly(ci, hole, Color(0.16, 0.2, 0.21))
+		poly(ci, refl, Color(0.16, 0.22, 0.24, 0.35))
+		line(ci, ring, stone.darkened(0.32), 1.4)
+		# 拱石縫
+		for a in range(1, 12, 2):
+			var th := PI * a / 12.0
+			ci.draw_line(f.call(uc + cos(th) * rr, wd, sin(th) * rh), f.call(uc + cos(th) * (rr + 0.06), wd, sin(th) * (rh + 3.0)), stone.darkened(0.3), 1.0)
+	# 近側欄板：望柱加扶手
+	var near := []
+	for u in us:
+		near.append(f.call(u, wd, deck.call(u) + 5.5))
+	for j in range(0, us.size(), 3):
+		ci.draw_line(f.call(us[j], wd, deck.call(us[j])), f.call(us[j], wd, deck.call(us[j]) + 7.0), stone.darkened(0.35), 1.6)
+	line(ci, near, stone.darkened(0.28), 1.6)
+	line(ci, body.slice(0, us.size()), stone.darkened(0.4), 1.2)
+
+
 ## 虹橋：整段一次畫成。c 為最前（最近觀者）一格的中心，n 為跨水格數。
 ## 仿《清明上河圖》木構疊梁拱：兩岸石砌橋臺，橋面由岸邊緩起成一道弧，
 ## 橋下兩套長短不同的直梁交錯成拱，橋上兩側有傘下攤販與行人。

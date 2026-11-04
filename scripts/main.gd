@@ -3,6 +3,7 @@ extends Node2D
 
 const Art = preload("res://scripts/view/art.gd")
 const WorldView = preload("res://scripts/view/world_view.gd")
+const ScrollPainter = preload("res://scripts/view/scroll_painter.gd")
 const UI = preload("res://scripts/ui/ui.gd")
 
 var cam: Camera2D
@@ -33,6 +34,9 @@ var title_mode := true
 var title_t := 0.0
 var shots := ""
 var auto := false
+var painting := false   # 正在繪長卷
+var dev := false        # 開發模式：快捷鍵加銀、晉升、過月，載入測試城
+var start_city := ""    # --city=auto：跳過開場，直接進入自動建好的測試城
 
 
 func _ready() -> void:
@@ -53,14 +57,38 @@ func _ready() -> void:
 	ui.main = self
 	add_child(ui)
 	Game.map_reset.connect(_on_map_reset)
+	var test_only := []
+	var testing := false
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--shots="):
 			shots = a.substr(8)
 		if a == "--auto":
 			auto = true
+		if a == "--dev":
+			dev = true
+		if a.begins_with("--city="):
+			start_city = a.substr(7)
+		if a == "--test" or a.begins_with("--test="):
+			testing = true
+			if a.begins_with("--test="):
+				test_only = Array(a.substr(7).split(","))
+	# 測試、錄影、開發模式都用另一個存檔，不動玩家的存檔
+	if shots != "" or testing or dev or "--autoplay" in OS.get_cmdline_user_args():
+		Game.save_path = "user://test_save.dat"
+	if testing:
+		var t = load("res://scripts/tools/tests.gd").new()
+		t.main = self
+		add_child(t)
+		Game.new_game("清河", 4242)
+		t.run(test_only)
+		return
 	Game.new_game("清河", randi() % 100000 if shots == "" else 4242)
 	Game.speed = 0
 	ui.show_title(true)
+	if dev:
+		ui.dev_strip()
+	if start_city == "auto":
+		_dev_city.call_deferred()
 	if "--autoplay" in OS.get_cmdline_user_args():
 		var bot = load("res://scripts/tools/autoplay.gd").new()
 		bot.main = self
@@ -73,6 +101,9 @@ func _ready() -> void:
 		elif "--uitest" in OS.get_cmdline_user_args():
 			DirAccess.make_dir_recursive_absolute(shots)
 			_ui_test()
+		elif "--scroll" in OS.get_cmdline_user_args():
+			DirAccess.make_dir_recursive_absolute(shots)
+			_scroll_test()
 		else:
 			_run_shots()
 
@@ -157,6 +188,57 @@ func load_saved() -> bool:
 	return false
 
 
+# ───────────────────────── 開發模式 ─────────────────────────
+
+## 直接進入自動建好的測試城（--city=auto），省去從頭玩起。
+func _dev_city() -> void:
+	title_mode = false
+	ui.show_title(false)
+	Game.new_game("清河", 4242)
+	_auto_build()
+	Game.speed = 1
+	ui.toast("已載入測試城")
+
+
+func _dev_key(key: int, shift: bool) -> void:
+	match key:
+		KEY_F6:
+			Game.money += 10000
+			ui.toast("開發：加銀一萬兩")
+		KEY_F7:
+			Game.promote()
+			ui.toast("開發：晉為「%s」" % Game.rank_name())
+		KEY_F8:
+			var days := 360 if shift else 30
+			Game.advance_days(days)
+			ui.toast("開發：過了%s" % ("一年" if shift else "一個月"))
+		KEY_F10:
+			_dev_city()
+
+
+# ───────────────────────── 長卷 ─────────────────────────
+
+## 繪一卷今貌，存入卷匣（user://scrolls/）。回傳卷匣中的序號，失敗或正在繪製時回傳 -1。
+func paint_scroll() -> int:
+	if painting:
+		return -1
+	painting = true
+	var p := ScrollPainter.new()
+	add_child(p)
+	var res: Dictionary = await p.paint()
+	p.queue_free()
+	painting = false
+	DirAccess.make_dir_recursive_absolute("user://scrolls")
+	var file := "user://scrolls/%d_%d_%d.jpg" % [Game.map_seed, Game.scrolls.size(), Time.get_unix_time_from_system()]
+	var img: Image = res.image
+	if img.save_jpg(file, 0.92) != OK:
+		ui.toast("長卷存檔失敗", true)
+		return -1
+	Game.scrolls.append({"file": file, "title": res.title, "date": res.date, "rank": Game.rank,
+		"pop": int(Game.stats.pop), "w": img.get_width(), "h": img.get_height()})
+	return Game.scrolls.size() - 1
+
+
 # ───────────────────────── 座標 ─────────────────────────
 
 static func to_tile_f(p: Vector2) -> Vector2:
@@ -224,6 +306,8 @@ func _process(delta: float) -> void:
 	if title_mode:
 		title_t += delta
 		cam.position += Vector2(cos(title_t * 0.1), sin(title_t * 0.13)) * 12.0 * delta
+		return
+	if ui.scroll_viewer != null:
 		return
 	var kv := Vector2.ZERO
 	if not ui.typing():
@@ -300,7 +384,7 @@ func _clamp_cam() -> void:
 
 
 func _unhandled_input(ev: InputEvent) -> void:
-	if title_mode:
+	if title_mode or ui.scroll_viewer != null:
 		return
 	if ev is InputEventMouseButton:
 		var mb := ev as InputEventMouseButton
@@ -351,6 +435,9 @@ func _unhandled_input(ev: InputEvent) -> void:
 				Game.save_game()
 			KEY_F9:
 				load_saved()
+			KEY_F6, KEY_F7, KEY_F8, KEY_F10:
+				if dev:
+					_dev_key(k.keycode, k.shift_pressed)
 
 
 func _zoom_at(f: float, screen_pos: Vector2) -> void:
@@ -664,6 +751,57 @@ func _ui_test() -> void:
 	get_tree().quit()
 
 
+## 長卷測試：自動建城，另在遠處放幾處產業以驗證城外段；繪卷、看卷、卷匣、存圖各截一張。
+func _scroll_test() -> void:
+	title_mode = false
+	ui.show_title(false)
+	_auto_build()
+	Game.speed = 0
+	var y: Dictionary = Game.buildings[Game.yamen_id]
+	for t in ["quarry", "lumber", "mine"]:
+		var sp := _find_spot(t, Vector2i(y.x, y.y), 40, 18)
+		if sp.x >= 0:
+			Game.place_building(t, sp.x, sp.y)
+	# 建城途中晉升過，會自動繪一卷；等它畫完
+	await get_tree().create_timer(2.0).timeout
+	while painting:
+		await get_tree().process_frame
+	print("auto scrolls=", Game.scrolls.size())
+	var t0 := Time.get_ticks_msec()
+	var k := await paint_scroll()
+	print("scroll painted k=", k, " ms=", Time.get_ticks_msec() - t0, " ", Game.scrolls[k] if k >= 0 else {})
+	Image.load_from_file(Game.scrolls[k].file).save_jpg(shots.path_join("20_scroll.jpg"), 0.9)
+	ui.open_scroll(k)
+	for i in 40:
+		await get_tree().process_frame
+	_shot("21_viewer_open.png")
+	ui.scroll_viewer.target_ox = ui.scroll_viewer._max_ox() * 0.45
+	for i in 40:
+		await get_tree().process_frame
+	_shot("22_viewer_pan.png")
+	ui.scroll_viewer.target_ox = 0.0
+	for i in 40:
+		await get_tree().process_frame
+	_shot("23_viewer_end.png")
+	OS.set_environment("SCROLL_EXPORT_DIR", shots)
+	ui.scroll_viewer._export()
+	print("exported: ", FileAccess.file_exists(shots.path_join("水村山郭").path_join("%s_%s.png" % [Game.scrolls[k].title, Game.scrolls[k].date])))
+	ui.scroll_viewer.close()
+	await get_tree().process_frame
+	# 存讀檔後卷匣與大事記仍在
+	var na := Game.annals.size()
+	Game.save_game()
+	Game.load_game()
+	print("after load annals=", Game.annals.size(), "/", na, " scrolls=", Game.scrolls.size())
+	ui.open_window("scrolls")
+	for i in 6:
+		await get_tree().process_frame
+	_shot("24_album.png")
+	ui.close_windows()
+	print("SCROLL TEST DONE")
+	get_tree().quit()
+
+
 func _click_at(p: Vector2) -> InputEventMouseButton:
 	var e := InputEventMouseButton.new()
 	e.button_index = MOUSE_BUTTON_LEFT
@@ -807,7 +945,7 @@ func _auto_build() -> void:
 			s2 = _find_spot("station", lm, 3)
 		Game.place_building("station", s2.x, s2.y)
 		var sb2: Dictionary = Game.building_at(s2.x, s2.y)
-		Game.build_roads(line_cells(Game.stop_cell(sb2, "road"), Game.stop_cell(st, "road")), 1)
+		Game.build_roads(Game.plan_road(Game.stop_cell(sb2, "road"), Game.stop_cell(st, "road")), 1)
 		print("lumber route: ", Game.create_route(sb2.id, st.id), " lumber conn=", Game.building_at(lm.x, lm.y).conn)
 	Game.advance_days(30 * 8)
 	for r in Game.routes.values():
@@ -834,6 +972,52 @@ class Cursor extends Node2D:
 			draw_colored_polygon(pts, col)
 		pts.append(pts[0])
 		draw_polyline(pts, Color(col, 0.9), 1.5)
+
+	## 轄境圈（墨色虛線）與路況：在轄境外的路標琥珀色，沒接上縣衙的路標紅色。只畫畫面內的格。
+	func _reach_overlay() -> void:
+		var g = Game
+		var yc: Vector2 = g.yamen_center()
+		var r: float = g.radius() + 0.5
+		# 線寬隨縮放調整，全景時也看得清；底下先墊一道淡紙色，雪地與樹林上也分得出
+		var lw := clampf(2.4 / main.cam.zoom.x, 2.0, 7.0)
+		var n := 180
+		for k in n:
+			if k % 3 == 2:
+				continue
+			var a0 := k / float(n) * TAU
+			var a1 := (k + 1) / float(n) * TAU
+			var p0 := Art.iso(yc.x + cos(a0) * r, yc.y + sin(a0) * r)
+			var p1 := Art.iso(yc.x + cos(a1) * r, yc.y + sin(a1) * r)
+			draw_line(p0, p1, Color(0.96, 0.92, 0.82, 0.55), lw * 2.2)
+			draw_line(p0, p1, Color(0.62, 0.16, 0.1, 0.9), lw)
+		var top := Art.iso(yc.x - r * 0.7071, yc.y - r * 0.7071)
+		Art.label(self, top - Vector2(0, 14 / main.cam.zoom.x), "轄境", int(clampf(16 / main.cam.zoom.x, 14, 40)), Color(0.62, 0.16, 0.1))
+		var vr: Rect2 = main.world.view_rect()
+		var t0: Vector2i = main.to_tile(vr.position)
+		var t1: Vector2i = main.to_tile(vr.end)
+		var t2: Vector2i = main.to_tile(Vector2(vr.end.x, vr.position.y))
+		var t3: Vector2i = main.to_tile(Vector2(vr.position.x, vr.end.y))
+		for y in range(maxi(0, mini(mini(t0.y, t1.y), mini(t2.y, t3.y))), mini(g.N, maxi(maxi(t0.y, t1.y), maxi(t2.y, t3.y)) + 1)):
+			for x in range(maxi(0, mini(mini(t0.x, t1.x), mini(t2.x, t3.x))), mini(g.N, maxi(maxi(t0.x, t1.x), maxi(t2.x, t3.x)) + 1)):
+				var i: int = g.idx(x, y)
+				if g.road[i] == 0 or g.conn_road(i):
+					continue
+				_diamond(Vector2i(x, y), Color(0.9, 0.6, 0.15, 0.45) if g.road_dist[i] >= 0 else Color(0.9, 0.2, 0.15, 0.45))
+
+	## 墊一塊紙的標籤，壓在樹林、雪地上也讀得清。字級隨縮放反向調整，畫面上大小不變。
+	func _tag(p: Vector2, text: String, size: int, col: Color) -> void:
+		var z: float = main.cam.zoom.x
+		var fs := int(size / z)
+		var f: Font = Defs.font
+		var w := f.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+		var r := Rect2(p - Vector2(w * 0.5 + 6 / z, fs * 0.8), Vector2(w + 12 / z, fs * 1.3))
+		draw_rect(r, Color(0.95, 0.91, 0.82, 0.88))
+		draw_rect(r, Color(col, 0.6), false, 1.0 / z)
+		Art.label(self, p, text, fs, col)
+
+	## 建築未通達時，畫出它需要有路的範圍。
+	func _reach_box(o: Vector2i, s: int, r: int) -> void:
+		_rect_outline(o.x - r - 0.5, o.y - r - 0.5, o.x + s + r - 0.5, o.y + s + r - 0.5, Color(0.85, 0.25, 0.15, 0.85))
 
 	func _rect_outline(x0: float, y0: float, x1: float, y1: float, col: Color) -> void:
 		var pts := PackedVector2Array([Art.iso(x0, y0), Art.iso(x1, y0), Art.iso(x1, y1), Art.iso(x0, y1), Art.iso(x0, y0)])
@@ -893,20 +1077,23 @@ class Cursor extends Node2D:
 			draw_colored_polygon(arrow, Color(0.08, 0.06, 0.05))
 			arrow.append(arrow[0])
 			draw_polyline(arrow, Color(1, 0.97, 0.9), 1.5)
+		# 修路、劃區、放建築時，畫出轄境圈，並把路依通達與否上色
+		if m.tool_kind() in ["line", "rect", "place"] and m.tool != "wall" and m.tool != "canal":
+			_reach_overlay()
 		match m.tool_kind():
 			"line":
 				var cells: Array = m.line_cells(m.drag_start, h) if m.dragging else [h]
 				var total := 0
+				var planned := {}
 				for c in cells:
 					var ok := true
 					var cost := 0
 					match m.tool:
-						"road_dirt":
-							cost = g.road_cost(c.x, c.y, 1)
+						"road_dirt", "road_stone":
+							cost = g.road_cost(c.x, c.y, 1 if m.tool == "road_dirt" else 2, planned)
 							ok = cost >= 0
-						"road_stone":
-							cost = g.road_cost(c.x, c.y, 2)
-							ok = cost >= 0
+							if ok and g.inb(c.x, c.y):
+								planned[g.idx(c.x, c.y)] = true
 						"canal":
 							ok = g.inb(c.x, c.y) and g.bld[g.idx(c.x, c.y)] < 0 and g.road[g.idx(c.x, c.y)] == 0 and g.terrain[g.idx(c.x, c.y)] != Defs.T.MOUNTAIN
 							cost = 40
@@ -948,7 +1135,14 @@ class Cursor extends Node2D:
 					var r: int = d.catch
 					_rect_outline(o.x - r - 0.5, o.y - r - 0.5, o.x + r + s - 0.5, o.y + r + s - 0.5, Color(0.3, 0.6, 1.0))
 				var lp := Art.iso(cc.x, cc.y) - Vector2(0, 40 + s * 10)
-				Art.label(self, lp, err if err != "" else "%s　%d 兩" % [d.name, d.cost], 15, Color(0.6, 0.1, 0.05) if err != "" else Color(0.1, 0.25, 0.1))
+				_tag(lp, err if err != "" else "%s　%d 兩" % [d.name, d.cost], 15, Color(0.6, 0.1, 0.05) if err != "" else Color(0.1, 0.25, 0.1))
+				if err == "" and type != "farm":
+					# 放下後會不會通達：用與模擬相同的規則先算一次
+					var probe := {"id": -1, "type": type, "x": o.x, "y": o.y, "size": s, "conn": false}
+					probe.conn = g._bconn(probe)
+					if not probe.conn:
+						_tag(lp + Vector2(0, 24), g.conn_reason(probe), 14, Color(0.6, 0.1, 0.05))
+						_reach_box(o, s, g.road_reach(probe))
 			"route":
 				var b: Dictionary = g.building_at(h.x, h.y)
 				var ok: bool = not b.is_empty() and g.is_stop(b)

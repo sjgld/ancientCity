@@ -30,8 +30,9 @@ var tree_var := PackedByteArray()
 var fert := PackedFloat32Array()
 var bld := PackedInt32Array()
 var shore := PackedByteArray()      # 距水兩格內為 1
+var water_size := PackedInt32Array() # 每格所屬水面的格數（河、運河相連者算一片），陸地為 0
 var lv := PackedFloat32Array()      # 地價
-var road_dist := PackedInt32Array() # 自縣衙沿路之距離，-1 為不通
+var road_dist := PackedInt32Array() # 自縣衙沿路之距離，-1 為未接上縣衙
 var near_conn := PackedByteArray()  # 距通達道路之格數（0..3），255 為過遠
 var cover := {}
 
@@ -73,6 +74,8 @@ var combos_found := {}    # 已成之格局：id → 日期
 var combo_tiles := {}     # 虹橋橋面：格索引 → [序, 長]
 var combo_count := {}     # 各格局現存處數
 var combo_ground := {}    # 格局範圍內鋪地的格：索引 → 格局 id
+var annals: Array = []    # 大事記：長卷拖尾的題跋由此寫成，隨存檔保存
+var scrolls: Array = []   # 已繪的長卷：{file, t, rank, pop, w, h}
 var combo_groups: Array = []  # 每處格局：{id, members}
 var anim_hide := {}       # 正在播放升起動畫、暫不由地圖分塊繪製的建築
 var history: Array = []
@@ -130,12 +133,48 @@ func log_msg(text: String, kind: int = 0, at: Vector2i = NO_CELL) -> void:
 	message.emit(text, kind)
 
 
+## 記入大事記（長卷拖尾的題跋）。只記錄，不影響模擬。
+func chronicle(kind: String, text: String, ref: String = "") -> void:
+	annals.append({"y": year, "m": month, "t": date_str(), "kind": kind, "text": text, "ref": ref})
+	if annals.size() > 120:
+		# 太長時先丟掉最早的災異，開城、晉升、格局留著
+		for k in annals.size():
+			if annals[k].kind in ["fire", "drought", "plague", "bandit", "flood"]:
+				annals.remove_at(k)
+				break
+
+
+func _last_annal_year(kind: String) -> int:
+	for k in range(annals.size() - 1, -1, -1):
+		if annals[k].kind == kind:
+			return annals[k].y
+	return -1
+
+
+func _has_annal(kind: String) -> bool:
+	for a in annals:
+		if a.kind == kind:
+			return true
+	return false
+
+
+## 轄境：以縣衙為圓心的一圈（格），品級越高越大。地圖上以虛線圈畫出。
 func radius() -> int:
 	return Defs.RANKS[rank]["radius"]
 
 
+func yamen_center() -> Vector2:
+	var y: Dictionary = buildings.get(yamen_id, {})
+	return b_center(y) if not y.is_empty() else Vector2(N * 0.5, N * 0.5)
+
+
+func in_reach(x: int, y: int) -> bool:
+	return Vector2(x, y).distance_to(yamen_center()) <= radius() + 0.5
+
+
+## 通達之路：接上了縣衙的路網，而且在轄境之內。
 func conn_road(i: int) -> bool:
-	return road_dist[i] >= 0 and road_dist[i] <= radius()
+	return road_dist[i] >= 0 and in_reach(i % N, i / N)
 
 
 func cap_of(c: String) -> float:
@@ -221,6 +260,8 @@ func _reset() -> void:
 	bumper = false
 	food_short = 0.0
 	log_lines = []
+	annals = []
+	scrolls = []
 	quests_done = {}
 	combos_found = {}
 	combo_tiles = {}
@@ -243,6 +284,7 @@ func new_game(cname: String, seed_v: int) -> void:
 	WorldGen.generate(self, seed_v)
 	_finish_setup()
 	log_msg("%s元年，奉旨於此設%s，名曰「%s」。" % [era, rank_name(), city_name], 1)
+	chronicle("found", "朝廷在這裡設了一個%s，取名「%s」。" % [rank_name(), city_name])
 	log_msg("先修道路、劃民居與農田，再鑿井建倉。", 0)
 
 
@@ -321,6 +363,15 @@ func b_center(b: Dictionary) -> Vector2:
 	return Vector2(b.x + h, b.y + h)
 
 
+## 臨路的範圍：民居、市肆、作坊須緊貼道路（四邊之一）；農田三格內；其餘設施與產業兩格內有路即可。
+func road_reach(b: Dictionary) -> int:
+	if is_grow(b):
+		return 1
+	if b.type == "farm":
+		return 3
+	return 2
+
+
 func _bconn(b: Dictionary) -> bool:
 	if b.type == "yamen":
 		return true
@@ -328,26 +379,46 @@ func _bconn(b: Dictionary) -> bool:
 		return false
 	if b.type == "farm":
 		return near_conn[idx(b.x, b.y)] <= 3
-	if b.type == "station" or b.type == "dock":
-		# 車站碼頭兩格內有通達道路即可與城中互通貨物
-		for dy in range(-2, 3):
-			for dx in range(-2, 3):
-				var x: int = b.x + dx
-				var y: int = b.y + dy
-				if inb(x, y) and conn_road(idx(x, y)):
-					return true
-		return false
-	for dy in range(-1, b.size + 1):
-		for dx in range(-1, b.size + 1):
+	return _road_near(b, road_reach(b), func(i): return conn_road(i))
+
+
+## 建築周圍 r 格內（r 為 1 時只算四邊，斜角不算）有沒有符合條件的路。
+func _road_near(b: Dictionary, r: int, pred: Callable) -> bool:
+	for dy in range(-r, b.size + r):
+		for dx in range(-r, b.size + r):
 			var inside: bool = dx >= 0 and dy >= 0 and dx < b.size and dy < b.size
-			var corner: bool = (dx == -1 or dx == b.size) and (dy == -1 or dy == b.size)
+			var corner: bool = r == 1 and (dx == -1 or dx == b.size) and (dy == -1 or dy == b.size)
 			if inside or corner:
 				continue
 			var x: int = b.x + dx
 			var y: int = b.y + dy
-			if inb(x, y) and conn_road(idx(x, y)):
+			if inb(x, y) and road[idx(x, y)] > 0 and pred.call(idx(x, y)):
 				return true
 	return false
+
+
+## 建築為何未通達：給冊頁與提示用的白話說明；已通達回傳空字串。
+func conn_reason(b: Dictionary) -> String:
+	if b.conn or b.type in ["yamen", "town"]:
+		return ""
+	var r := road_reach(b)
+	var near := "緊貼建築（四邊之一，斜角不算）" if r == 1 else ("兩格內" if r == 2 else "%s格內" % Defs.cn_num(r))
+	if b.type == "farm":
+		if near_conn[idx(b.x, b.y)] <= 3:
+			return ""
+		near = "三格內"
+		var any_road := false
+		for dy in range(-3, 4):
+			for dx in range(-3, 4):
+				if inb(b.x + dx, b.y + dy) and road[idx(b.x + dx, b.y + dy)] > 0:
+					any_road = true
+		if not any_road:
+			return "附近沒有路：須在%s修路" % near
+	elif not _road_near(b, r, func(i): return true):
+		return "附近沒有路：須在%s修路" % near
+	elif not _road_near(b, r, func(i): return road_dist[i] >= 0) and b.type != "farm":
+		return "旁邊的路沒有接到縣衙"
+	return "在轄境之外：離縣衙 %d 格，轄境 %d 格，晉升後擴大" % [int(Vector2(b.x, b.y).distance_to(yamen_center())), radius()]
 
 
 func valid_place(type: String, x: int, y: int) -> String:
@@ -440,7 +511,9 @@ func _stem(n: int) -> String:
 
 # ───────────────────────── 道路、運河、城牆、分區 ─────────────────────────
 
-func road_cost(x: int, y: int, kind: int) -> int:
+## 修路的花費；0 為已有，-1 為不能修，-2 為會讓橋交會、轉彎或並排。
+## planned 為另外視為已有路的格（預覽整條線時，前面的格先算進去）。
+func road_cost(x: int, y: int, kind: int, planned: Dictionary = {}) -> int:
 	if not inb(x, y):
 		return -1
 	var i := idx(x, y)
@@ -448,6 +521,8 @@ func road_cost(x: int, y: int, kind: int) -> int:
 		return -1
 	if road[i] >= kind:
 		return 0
+	if road[i] == 0 and not bridge_ok(x, y, planned):
+		return -2
 	var base := 5 if kind == 1 else 15
 	if terrain[i] == Defs.T.WATER:
 		return base * 5
@@ -456,13 +531,71 @@ func road_cost(x: int, y: int, kind: int) -> int:
 	return base
 
 
+## 規劃一條可修的路：避開山與建築，偏好沿現有道路，水上只走筆直的橋。回傳格子清單，找不到則空。
+func plan_road(a: Vector2i, b: Vector2i) -> Array:
+	var g := AStarGrid2D.new()
+	g.region = Rect2i(0, 0, N, N)
+	g.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_NEVER
+	g.update()
+	for y in N:
+		for x in N:
+			var i := idx(x, y)
+			if terrain[i] == Defs.T.MOUNTAIN or (bld[i] >= 0 and road[i] == 0):
+				g.set_point_solid(Vector2i(x, y), true)
+			elif road[i] > 0:
+				g.set_point_weight_scale(Vector2i(x, y), 0.3)
+			elif terrain[i] == Defs.T.WATER:
+				g.set_point_weight_scale(Vector2i(x, y), 6.0)
+			elif terrain[i] == Defs.T.HILL:
+				g.set_point_weight_scale(Vector2i(x, y), 2.0)
+	# 橋只能筆直：逐格模擬修路，遇到會讓橋交會、轉彎或並排的格就封住重找
+	for attempt in 40:
+		var path := Array(g.get_id_path(a, b))
+		var planned := {}
+		var bad := NO_CELL
+		for c in path:
+			var i := idx(c.x, c.y)
+			if road[i] == 0 and not bridge_ok(c.x, c.y, planned):
+				bad = c
+				break
+			planned[i] = true
+		if bad == NO_CELL:
+			return path
+		g.set_point_solid(bad, true)
+	return []
+
+
+## 橋只能筆直跨水：水上的路格，相鄰的路只能在同一條軸上；岸上的路也不能從側面接到橋身。
+## 古代的十字橋（晉祠魚沼飛梁）、八字橋（紹興）都是特例，城中河上的橋不交會、不轉彎、不並排。
+func bridge_ok(x: int, y: int, planned: Dictionary = {}) -> bool:
+	var has := func(px: int, py: int) -> bool:
+		return inb(px, py) and (road[idx(px, py)] > 0 or planned.has(idx(px, py)))
+	if terrain[idx(x, y)] == Defs.T.WATER:
+		var hx: bool = has.call(x + 1, y) or has.call(x - 1, y)
+		var hy: bool = has.call(x, y + 1) or has.call(x, y - 1)
+		if hx and hy:
+			return false
+	for d in DIRS:
+		var n: Vector2i = Vector2i(x, y) + d
+		if not inb(n.x, n.y) or terrain[idx(n.x, n.y)] != Defs.T.WATER or not has.call(n.x, n.y):
+			continue
+		# 鄰格是橋：新路接上後，它不能同時有另一軸的路
+		var perp := Vector2i(d.y, d.x)
+		if has.call(n.x + perp.x, n.y + perp.y) or has.call(n.x - perp.x, n.y - perp.y):
+			return false
+	return true
+
+
 func build_roads(cells: Array, kind: int) -> int:
 	if kind == 2 and rank < 1:
 		log_msg("石板路需晉為「鎮」方可鋪設。", 2)
 		return 0
 	var spent := 0
+	var bent := false
 	for c in cells:
 		var cost := road_cost(c.x, c.y, kind)
+		if cost == -2:
+			bent = true
 		if cost <= 0:
 			continue
 		if money < cost:
@@ -477,11 +610,16 @@ func build_roads(cells: Array, kind: int) -> int:
 			terrain[i] = Defs.T.GRASS
 		astar_road.set_point_solid(c, false)
 		mark(c.x, c.y)
+		if terrain[i] == Defs.T.WATER:
+			_mark_span(c.x, c.y)
 		for d in DIRS:
 			mark(c.x + d.x, c.y + d.y)
+	if bent:
+		log_msg("橋只能筆直跨水，不能在水上交會、轉彎或並排，那幾格未修。", 2)
 	if spent > 0:
-		connectivity_dirty = true
 		zone_dirty = true
+		# 立即重算通達，暫停時也看得到結果
+		_update_connectivity()
 	return spent
 
 
@@ -560,7 +698,9 @@ func bulldoze(x: int, y: int) -> String:
 	elif road[i] > 0:
 		road[i] = 0
 		astar_road.set_point_solid(Vector2i(x, y), true)
-		connectivity_dirty = true
+		if terrain[i] == Defs.T.WATER:
+			_mark_span(x, y)
+		_update_connectivity()
 	elif canal[i] > 0:
 		canal[i] = 0
 		terrain[i] = Defs.T.GRASS
@@ -621,6 +761,7 @@ func set_zone(x: int, y: int, z: int) -> void:
 # ───────────────────────── 連通、覆蓋 ─────────────────────────
 
 func _compute_shore() -> void:
+	_compute_water()
 	for y in N:
 		for x in N:
 			var s := 0
@@ -1226,14 +1367,22 @@ func _upgrades() -> void:
 
 func _check_rank() -> void:
 	while rank < Defs.RANKS.size() - 1 and stats.pop >= Defs.RANKS[rank + 1]["pop"]:
-		rank += 1
-		var rw: int = Defs.RANKS[rank]["reward"]
-		money += rw
-		connectivity_dirty = true
-		var yb: Dictionary = buildings.get(yamen_id, {})
-		log_msg("聖旨到！%s人丁興旺，升格為「%s」，賞銀%d兩。" % [city_name, rank_name(), rw], 1,
-			Vector2i(yb.x, yb.y) if not yb.is_empty() else NO_CELL)
-		rank_changed.emit(rank)
+		promote()
+
+
+## 晉升一級：賞銀、記入邸報與大事記。開發模式的「晉升」鍵也呼叫這裡。
+func promote() -> void:
+	if rank >= Defs.RANKS.size() - 1:
+		return
+	rank += 1
+	var rw: int = Defs.RANKS[rank]["reward"]
+	money += rw
+	connectivity_dirty = true
+	var yb: Dictionary = buildings.get(yamen_id, {})
+	log_msg("聖旨到！%s人丁興旺，升格為「%s」，賞銀%d兩。" % [city_name, rank_name(), rw], 1,
+		Vector2i(yb.x, yb.y) if not yb.is_empty() else NO_CELL)
+	chronicle("rank", "人口超過%s，升為%s，朝廷賞銀%s兩。" % [Defs.cn_big(Defs.RANKS[rank]["pop"]), rank_name(), Defs.cn_big(rw)])
+	rank_changed.emit(rank)
 
 
 # ───────────────────────── 格局 ─────────────────────────
@@ -1247,6 +1396,85 @@ func _near_buildings(cell: Vector2i, r: int) -> Array:
 		if maxi(dx, dy) <= r:
 			res.append(b)
 	return res
+
+
+## 各片水面的大小：河道與相連的運河是一大片，可以行船；孤立的小池塘不行。
+func _compute_water() -> void:
+	water_size.resize(N * N)
+	water_size.fill(0)
+	var seen := PackedByteArray()
+	seen.resize(N * N)
+	for s0 in N * N:
+		if seen[s0] or terrain[s0] != Defs.T.WATER:
+			continue
+		var comp: Array[int] = [s0]
+		seen[s0] = 1
+		var h := 0
+		while h < comp.size():
+			var i := comp[h]
+			h += 1
+			for d in DIRS:
+				var nx := i % N + d.x
+				var ny := i / N + d.y
+				if not inb(nx, ny):
+					continue
+				var j := idx(nx, ny)
+				if not seen[j] and terrain[j] == Defs.T.WATER:
+					seen[j] = 1
+					comp.append(j)
+		for i in comp:
+			water_size[i] = comp.size()
+
+
+## 通航水面：一片水達四十格以上（主河道、相連的運河）。
+func navigable(x: int, y: int) -> bool:
+	return inb(x, y) and water_size.size() == N * N and water_size[idx(x, y)] >= 40
+
+
+## 橋段：沿橋向兩頭走到岸。回傳 [本格在橋中的序, 跨水格數, 是否沿 x 向]；交會的舊橋回傳空陣列。
+func bridge_span(x: int, y: int) -> Array:
+	var ax := _is_bridge(x + 1, y) or _is_bridge(x - 1, y)
+	var ay := _is_bridge(x, y + 1) or _is_bridge(x, y - 1)
+	if ax and ay:
+		return []
+	var d := Vector2i(1, 0) if ax or not ay and ((inb(x + 1, y) and road[idx(x + 1, y)] > 0) or (inb(x - 1, y) and road[idx(x - 1, y)] > 0)) else Vector2i(0, 1)
+	var s := Vector2i(x, y)
+	while _is_bridge(s.x - d.x, s.y - d.y):
+		s -= d
+	var n := 0
+	var k := 0
+	var p := s
+	while _is_bridge(p.x, p.y):
+		if p == Vector2i(x, y):
+			k = n
+		n += 1
+		p += d
+	return [k, n, d.x == 1]
+
+
+## 石拱橋：整段是石板路、跨在通航水面上，且是一道筆直的橋。
+func arch_bridge(x: int, y: int) -> bool:
+	var sp := bridge_span(x, y)
+	if sp.is_empty() or not navigable(x, y):
+		return false
+	var d := Vector2i(1, 0) if sp[2] else Vector2i(0, 1)
+	var p := Vector2i(x, y) - d * int(sp[0])
+	for k in sp[1]:
+		if road[idx(p.x, p.y)] != 2:
+			return false
+		p += d
+	return true
+
+
+## 橋上任一格改變時，整段橋重畫（石拱橋整段畫在最前一格）。
+func _mark_span(x: int, y: int) -> void:
+	for d in DIRS:
+		var p := Vector2i(x, y) + d
+		var k := 0
+		while _is_bridge(p.x, p.y) and k < 40:
+			mark(p.x, p.y)
+			p += d
+			k += 1
 
 
 func _is_bridge(x: int, y: int) -> bool:
@@ -1420,6 +1648,7 @@ func _check_combos() -> void:
 					at = Vector2i(b.x, b.y)
 					break
 			log_msg("格局成立：「%s」。%s" % [Defs.combo(id).name, Defs.combo(id).verse], 1, at)
+			chronicle("combo", "城中第一次有了「%s」。古人寫道：「%s」" % [Defs.combo(id).name, Defs.combo(id).verse], id)
 			combo_found.emit(id)
 
 
@@ -1575,6 +1804,8 @@ func _update_fires() -> void:
 				mark_b(b)
 			else:
 				log_msg("%s焚毀殆盡。" % bname(b), 2, Vector2i(b.x, b.y))
+				if _last_annal_year("fire") != year:
+					chronicle("fire", "城裡失火，%s燒毀了。" % bname(b))
 				remove_building(id)
 
 
@@ -1597,6 +1828,7 @@ func _events() -> void:
 	if month in [3, 4, 5] and drought == 0 and rng.randf() < 0.04:
 		drought = 3
 		log_msg("久旱不雨，田禾枯槁，糧產減半。", 2)
+		chronicle("drought", "大旱，田裡的莊稼枯死，收成少了一半。")
 	# 洪水
 	if month in [4, 5, 6] and not policies.has("water_work") and rng.randf() < 0.04:
 		_flood()
@@ -1620,11 +1852,13 @@ func _events() -> void:
 				lost += 1
 		plague_t = 60
 		log_msg("疫病流行，%s戶染疾。廣設醫館可防。" % Defs.cn_num(lost), 2, at)
+		chronicle("plague", "瘟疫流行，%s戶人家染病。" % Defs.cn_big(lost))
 	# 盜匪
 	if rng.randf() < 0.03 and _avg_cover_houses("security") < 0.5 and money > 500:
 		var l := money * 0.08
 		money -= l
 		log_msg("盜匪夜劫府庫，失銀%d兩。" % int(l), 2)
+		chronicle("bandit", "盜匪夜裡搶了府庫，丟了%s兩銀子。" % Defs.cn_big(int(l)))
 	# 朝廷巡察
 	if month == 9 and stats.happy >= 60 and pop >= 200:
 		var rw := 200 * (rank + 1)
@@ -1676,6 +1910,7 @@ func _flood() -> void:
 					remove_building(b.id)
 		if hit > 0:
 			log_msg("河水暴漲，沖毀%s處屋舍田畝。施行「興修水利」可防。" % Defs.cn_num(hit), 2, Vector2i(x, y))
+			chronicle("flood", "河水暴漲，沖毀%s處房屋田地。" % Defs.cn_big(hit))
 		return
 
 
@@ -1758,6 +1993,8 @@ func create_route(a_id: int, b_id: int) -> String:
 	routes[r.id] = r
 	add_vehicle(r.id, kind)
 	log_msg("開闢新路線：%s ⇄ %s。" % [bname(a), bname(b)], 1, Vector2i(a.x, a.y))
+	if not _has_annal("route"):
+		chronicle("route", "開通第一條商路，從%s到%s。" % [bname(a), bname(b)])
 	return ""
 
 
@@ -1981,8 +2218,10 @@ func tile_info(x: int, y: int) -> String:
 		var kind := "%s%s" % ["橋 · " if terrain[i] == Defs.T.WATER else "", "土路" if road[i] == 1 else "石板路"]
 		if conn_road(i):
 			s += "{i:road} %s　[color=%s]通達縣衙[/color]，沿路 [b]%d[/b] 格\n" % [kind, C_GOOD, road_dist[i]]
+		elif road_dist[i] >= 0:
+			s += "{i:road} %s　[color=%s]已接縣衙，但在轄境之外[/color]（離縣衙 %d 格，轄境 %d 格）\n" % [kind, C_BAD, int(Vector2(x, y).distance_to(yamen_center())), radius()]
 		else:
-			s += "{i:road} %s　[color=%s]不通縣衙[/color]\n" % [kind, C_BAD]
+			s += "{i:road} %s　[color=%s]沒有接到縣衙[/color]\n" % [kind, C_BAD]
 	if wall[i] > 0:
 		s += "城牆%s\n" % ("（城門）" if road[i] > 0 else "")
 	if zone[i] > 0:
@@ -2036,7 +2275,7 @@ func building_info(b: Dictionary) -> String:
 	elif b.age < 6:
 		s += "{i:note} [color=%s]興建中……[/color]\n" % C_NOTE
 	elif b.type != "town" and b.type != "yamen" and not b.conn:
-		s += "{i:bad} [warn]未通達：須以道路連接縣衙[/warn]\n\n"
+		s += "{i:bad} [warn]未通達：%s[/warn]\n\n" % conn_reason(b)
 	if is_grow(b):
 		s += _ladder(Defs.GROW[b.type]["names"], b.level)
 	match b.type:
@@ -2117,10 +2356,11 @@ func building_info(b: Dictionary) -> String:
 # ───────────────────────── 存檔 ─────────────────────────
 
 const SAVE_PATH := "user://save.dat"
+var save_path := SAVE_PATH   # 測試與錄影時改用 user://test_save.dat，不動玩家的存檔
 
 
 func has_save() -> bool:
-	return FileAccess.file_exists(SAVE_PATH)
+	return FileAccess.file_exists(save_path)
 
 
 func save_game() -> bool:
@@ -2142,8 +2382,9 @@ func save_game() -> bool:
 		"station_count": station_count, "city_name": city_name, "era": era, "year": year, "month": month,
 		"day": day, "rank": rank, "money": money, "stock": stock, "policies": policies, "tax": tax,
 		"stats": stats, "drought": drought, "log": log_lines, "quests": quests_done, "combos": combos_found, "history": history, "seed": map_seed, "rng": rng.state,
+		"annals": annals, "scrolls": scrolls,
 	}
-	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+	var f := FileAccess.open(save_path, FileAccess.WRITE)
 	if f == null:
 		return false
 	f.store_var(data)
@@ -2155,7 +2396,7 @@ func save_game() -> bool:
 func load_game() -> bool:
 	if not has_save():
 		return false
-	var f := FileAccess.open(SAVE_PATH, FileAccess.READ)
+	var f := FileAccess.open(save_path, FileAccess.READ)
 	if f == null:
 		return false
 	var d = f.get_var()
@@ -2194,6 +2435,8 @@ func load_game() -> bool:
 	quests_done = d.get("quests", {})
 	combos_found = d.get("combos", {})
 	history = d.get("history", [])
+	annals = d.get("annals", [])
+	scrolls = d.get("scrolls", [])
 	map_seed = d.seed
 	rng.state = d.rng
 	for b in buildings.values():

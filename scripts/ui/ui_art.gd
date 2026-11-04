@@ -458,6 +458,13 @@ static func icon(ci: CanvasItem, kind: String, r: Rect2, line: Color = INK) -> v
 			_pl(ci, [Vector2(8, 12), Vector2(8, 20)], line, 1.0)
 			_pl(ci, [Vector2(4, 16), Vector2(12, 16)], line, 1.0)
 			_pl(ci, [Vector2(3, 11), Vector2(18, 11), Vector2(20.5, 8)], line, 1.5)
+		"scroll":
+			# 半開的手卷：左端捲起成軸，右端天杆，卷面上一道遠山
+			_shape(ci, [Vector2(7, 6.5), Vector2(20.5, 6.5), Vector2(20.5, 17.5), Vector2(7, 17.5)], Color("e8dcc0"), line, 1.2)
+			_pl(ci, [Vector2(9, 15), Vector2(12, 11.5), Vector2(14, 13.5), Vector2(16.5, 10), Vector2(19, 15)], Color("3f6b55"), 1.3)
+			_shape(ci, [Vector2(3, 5), Vector2(7.5, 5), Vector2(7.5, 19), Vector2(3, 19)], Color("a07a50"), line, 1.3)
+			_pl(ci, [Vector2(21.5, 4), Vector2(21.5, 20)], line, 2.0)
+			ci.draw_rect(Rect2(17.2, 7.8, 2.2, 2.2), ZHU)
 		"deco":
 			_shape(ci, [Vector2(2.5, 9.5), Vector2(7, 7.6), Vector2(12, 3), Vector2(17, 7.6), Vector2(21.5, 9.5)], Color("3f6b55"), line, 1.3)
 			_pl(ci, [Vector2(6, 9.5), Vector2(6, 19.5)], line, 1.5)

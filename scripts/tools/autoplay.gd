@@ -192,8 +192,8 @@ func pick_block(z: int) -> Vector2i:
 			var info := block_info(b)
 			if not info.valid:
 				continue
-			# 轄境：街區中心沿路約在範圍之內
-			if (absi((gx(i) + gx(i + 1)) / 2 - ox) + absi((gy(j) + gy(j + 1)) / 2 - oy)) > Game.radius() - 4:
+			# 轄境：街區中心須在縣衙周圍的圈內
+			if Vector2((gx(i) + gx(i + 1)) / 2 - ox, (gy(j) + gy(j + 1)) / 2 - oy).length() > Game.radius() - 3:
 				continue
 			var score := 0.0
 			match z:
@@ -284,22 +284,7 @@ func serve(type: String, key: String, min_lacking: int) -> bool:
 
 
 func road_path(a: Vector2i, b: Vector2i) -> Array:
-	var g := AStarGrid2D.new()
-	g.region = Rect2i(0, 0, Game.N, Game.N)
-	g.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_NEVER
-	g.update()
-	for y in Game.N:
-		for x in Game.N:
-			var i := Game.idx(x, y)
-			if Game.terrain[i] == Defs.T.MOUNTAIN or (Game.bld[i] >= 0 and Game.road[i] == 0):
-				g.set_point_solid(Vector2i(x, y), true)
-			elif Game.road[i] > 0:
-				g.set_point_weight_scale(Vector2i(x, y), 0.3)
-			elif Game.terrain[i] == Defs.T.WATER:
-				g.set_point_weight_scale(Vector2i(x, y), 6.0)
-			elif Game.terrain[i] == Defs.T.HILL:
-				g.set_point_weight_scale(Vector2i(x, y), 2.0)
-	return Array(g.get_id_path(a, b))
+	return Game.plan_road(a, b)
 
 
 func open_trade() -> bool:

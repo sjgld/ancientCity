@@ -3,6 +3,7 @@ extends CanvasLayer
 
 const UIArt = preload("res://scripts/ui/ui_art.gd")
 const Art = preload("res://scripts/view/art.gd")
+const ScrollView = preload("res://scripts/ui/scroll_view.gd")
 
 const TOP_H := 50.0
 const BOTTOM_H := 66.0
@@ -17,7 +18,7 @@ const CATS := [
 	{"id": "deco", "icon": "deco", "name": "景觀"},
 	{"id": "view", "icon": "layer", "name": "圖層"},
 ]
-const BOOK_TABS := [["policy", "政務", "gov"], ["stock", "倉廩", "store"], ["routes", "商路", "route"], ["stats", "年鑑", "chart"], ["combos", "圖鑑", "deco"], ["help", "須知", "bookmark"]]
+const BOOK_TABS := [["policy", "政務", "gov"], ["stock", "倉廩", "store"], ["routes", "商路", "route"], ["stats", "年鑑", "chart"], ["combos", "圖鑑", "deco"], ["scrolls", "長卷", "scroll"], ["help", "須知", "bookmark"]]
 const SEASON_ICON := ["spring", "summer", "autumn", "winter"]
 const COVER_NAME := {"water": "水", "health": "醫", "security": "治安", "fire": "防火", "edu": "教化", "faith": "信仰", "fun": "娛樂"}
 
@@ -81,6 +82,7 @@ var menu_panel: PanelContainer
 var music_btn: MenuRow
 var scale_btn: MenuRow
 var dock_btns := {}
+var scroll_viewer = null
 
 
 func _ready() -> void:
@@ -310,11 +312,11 @@ func _build_top() -> void:
 	var dock := HBoxContainer.new()
 	dock.add_theme_constant_override("separation", 2)
 	h.add_child(dock)
-	for w in BOOK_TABS.slice(0, 5):
+	for w in BOOK_TABS.slice(0, 6):
 		var d := DockButton.new()
 		d.label = w[1]
 		d.kind = w[2]
-		d.tooltip_text = {"policy": "政務：稅率、政令、收支", "stock": "倉廩：各色貨物存量", "routes": "商路：路線與車船", "stats": "年鑑：歷月走勢", "combos": "圖鑑：城中已成的格局"}[w[0]]
+		d.tooltip_text = {"policy": "政務：稅率、政令、收支", "stock": "倉廩：各色貨物存量", "routes": "商路：路線與車船", "stats": "年鑑：歷月走勢", "combos": "圖鑑：城中已成的格局", "scrolls": "長卷：把這座城畫成一卷手卷"}[w[0]]
 		dock_btns[w[0]] = d
 		d.pressed.connect(func():
 			Sfx.play("click")
@@ -627,6 +629,122 @@ func _on_rank(_r: int) -> void:
 	_fill_palette()
 	Sfx.play("gong")
 	banner("晉為「%s」" % Game.rank_name())
+	_auto_scroll()
+
+
+# ───────────────────────── 長卷 ─────────────────────────
+
+## 晉升後自動繪一卷：等橫幅過去再畫，畫好掛一張「展卷」紙條。
+func _auto_scroll() -> void:
+	await get_tree().create_timer(1.5).timeout
+	if main.title_mode:
+		return
+	var k: int = await main.paint_scroll()
+	if k < 0:
+		return
+	if dock_btns.has("scrolls"):
+		dock_btns["scrolls"].badge = true
+		dock_btns["scrolls"].queue_redraw()
+	if cur_win == "scrolls":
+		_fill_window("scrolls", true)
+	_scroll_notice(k)
+
+
+## 開發模式的提示條：畫面下方一行小字，列出快捷鍵。
+func dev_strip() -> void:
+	var l := _label("開發模式　F6 加銀萬兩　F7 晉升一級　F8 過一月　Shift+F8 過一年　F10 重建測試城", 14, UIArt.IVORY)
+	l.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
+	l.add_theme_constant_override("shadow_offset_x", 1)
+	l.add_theme_constant_override("shadow_offset_y", 1)
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	l.anchor_left = 0.5
+	l.anchor_right = 0.5
+	l.anchor_top = 1.0
+	l.anchor_bottom = 1.0
+	l.offset_top = -BOTTOM_H - 26
+	l.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	root.add_child(l)
+
+
+## 手動「繪今貌」。
+func _paint_now() -> void:
+	if main.painting:
+		return
+	toast("正在繪製長卷……")
+	if cur_win == "scrolls":
+		_fill_window("scrolls", true)
+	var k: int = await main.paint_scroll()
+	if cur_win == "scrolls":
+		_fill_window("scrolls", true)
+	if k >= 0:
+		open_scroll(k)
+
+
+func open_scroll(k: int) -> void:
+	if scroll_viewer != null:
+		scroll_viewer.close()
+	close_windows()
+	menu_panel.visible = false
+	var v = ScrollView.new()
+	v.ui = self
+	v.index = k
+	root.add_child(v)
+	scroll_viewer = v
+
+
+## 新卷繪成的紙條：題名加〔展卷〕，停留十二秒。
+func _scroll_notice(k: int) -> void:
+	var e: Dictionary = Game.scrolls[k]
+	var b := PanelContainer.new()
+	b.add_theme_stylebox_override("panel", UIArt.box("paper", UIArt.PAPER, 18, 10, 3.0, true, Color(INK, 0.35)))
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", 14)
+	b.add_child(h)
+	var ic := Control.new()
+	ic.custom_minimum_size = Vector2(28, 28)
+	ic.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	ic.draw.connect(func(): UIArt.icon(ic, "scroll", Rect2(2, 2, 24, 24)))
+	h.add_child(ic)
+	h.add_child(_label("《%s》已繪成，收入卷匣" % e.title, 18, INK))
+	h.add_child(_button("展卷", func():
+		b.queue_free()
+		open_scroll(k)))
+	root.add_child(b)
+	b.reset_size()
+	b.position = Vector2((root.size.x - b.size.x) * 0.5, TOP_H + 64)
+	var tw := create_tween()
+	tw.tween_interval(12.0)
+	tw.tween_property(b, "modulate:a", 0.0, 0.8)
+	tw.tween_callback(b.queue_free)
+
+
+## 卷匣中的一卷：捲起的手卷，包首石青、題簽寫卷名。
+class ScrollCase extends Control:
+	var title := ""
+
+	func _init() -> void:
+		custom_minimum_size = Vector2(300, 58)
+
+	func _draw() -> void:
+		var r := Rect2(14, 12, size.x - 28, 34)
+		draw_rect(Rect2(r.position + Vector2(3, 5), r.size), UIArt.LIFT)
+		# 包首：石青綾，上下兩道高光作圓柱
+		draw_rect(r, Color("2f4f5c"))
+		draw_rect(Rect2(r.position.x, r.position.y + 5, r.size.x, 5), Color("4b6d79"))
+		draw_rect(Rect2(r.position.x, r.end.y - 7, r.size.x, 7), Color("223a44"))
+		# 軸頭
+		for x in [r.position.x - 10, r.end.x]:
+			draw_rect(Rect2(x, r.position.y + 6, 10, r.size.y - 12), Color("5b4330"))
+			draw_rect(Rect2(x + 2, r.position.y + 8, 3, r.size.y - 16), Color("8a6a4d"))
+		# 題簽
+		var f := UIArt.font("title")
+		var tw := f.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1, 16).x
+		var q := Rect2(r.end.x - tw - 46, r.position.y + 7, tw + 22, r.size.y - 14)
+		draw_rect(q, UIArt.IVORY)
+		draw_rect(q, UIArt.IVORY_2, false, 1.0)
+		UIArt.text_c(self, f, q.get_center(), title, 16, INK)
+		# 絲帶
+		draw_rect(Rect2(r.position.x + 30, r.position.y - 2, 6, r.size.y + 4), Color("8a3a2e"))
 
 
 # ───────────────────────── 冊頁（選中物） ─────────────────────────
@@ -781,7 +899,7 @@ func _yamen_text() -> String:
 	var t := "[stats]people,%d,人丁;store,%d,戶數;mood,%d,民心[/stats]" % [s.pop, s.houses, int(s.happy)]
 	t += "勞力 [b]%d[/b]　職缺 [b]%d[/b]　到崗 [b]%d%%[/b]　失業 [color=%s][b]%d%%[/b][/color]\n" % [
 		s.labor, s.jobs, int(s.staff * 100), "#b1372a" if s.unemp > 0.15 else "#29241f", int(s.unemp * 100)]
-	t += "{i:road} 轄境：沿路 [b]%d[/b] 格內\n" % Game.radius()
+	t += "{i:road} 轄境：縣衙周圍 [b]%d[/b] 格內（修路時地圖上的虛線圈）\n" % Game.radius()
 	if Game.rank < Defs.RANKS.size() - 1:
 		var nx: Dictionary = Defs.RANKS[Game.rank + 1]
 		t += "{i:gov} 晉升「[k]%s[/k]」尚需人丁 [n]%d[/n]\n" % [nx.name, maxi(0, nx.pop - s.pop)]
@@ -1183,6 +1301,41 @@ func _fill_window(id: String, full: bool = false) -> void:
 			var hl := _rich("")
 			set_rich(hl, _help_text())
 			body.add_child(hl)
+		"scrolls":
+			if not full:
+				return
+			_clear(body)
+			var top := HBoxContainer.new()
+			top.add_theme_constant_override("separation", 16)
+			body.add_child(top)
+			var intro := _rich("[color=#5d5147]每次晉升都會把城畫成一卷手卷，收在這裡；也可以隨時繪下今貌。卷首題名，卷中是城，卷尾題跋記下這座城的大事。手卷由右往左看。[/color]")
+			intro.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			top.add_child(intro)
+			var pb := _button("正在繪製……" if main.painting else "繪今貌", _paint_now, "把現在的城畫成一卷")
+			pb.disabled = main.painting
+			pb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			top.add_child(pb)
+			if Game.scrolls.is_empty():
+				body.add_child(_label("卷匣還是空的。", 17, UIArt.INK_3))
+			for k in range(Game.scrolls.size() - 1, -1, -1):
+				var e: Dictionary = Game.scrolls[k]
+				var row := HBoxContainer.new()
+				row.add_theme_constant_override("separation", 16)
+				body.add_child(row)
+				var sc := ScrollCase.new()
+				sc.title = e.title
+				row.add_child(sc)
+				var v := VBoxContainer.new()
+				v.add_theme_constant_override("separation", 0)
+				v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+				v.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+				row.add_child(v)
+				v.add_child(_label(e.title, 22, INK, "title"))
+				v.add_child(_label("%s　%s　人口 %d" % [e.date, Defs.RANKS[e.rank]["name"], e.pop], 14, UIArt.INK_3, "num"))
+				var kk := k
+				var ob := _button("展卷", func(): open_scroll(kk))
+				ob.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+				row.add_child(ob)
 		"combos":
 			if not full:
 				return
@@ -2114,7 +2267,7 @@ class BookMark extends Button:
 	func _init() -> void:
 		focus_mode = Control.FOCUS_NONE
 		theme_type_variation = "Flat"
-		custom_minimum_size = Vector2(46, 112)
+		custom_minimum_size = Vector2(46, 86)
 
 	func _draw() -> void:
 		var r := Rect2(Vector2.ZERO, size)

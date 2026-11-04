@@ -33,6 +33,7 @@ var road_cells_t := 0.0
 var last_season := -1
 var last_rank := -1
 var cam: Camera2D
+var offscreen := false   # 長卷離屏繪製用：不接管 Game.dirty、不藏動畫中的建築、行人車船定格
 
 
 static func tile_pos(x: float, y: float) -> Vector2:
@@ -80,14 +81,25 @@ func setup(camera: Camera2D) -> void:
 	alerts = AlertLayer.new()
 	alerts.view = self
 	add_child(alerts)
+	last_season = -1
+	if offscreen:
+		for o in obj_chunks.values():
+			o.show_all = true
+		overlay.visible = false
+		anim.visible = false
+		anim.process_mode = Node.PROCESS_MODE_DISABLED
+		alerts.visible = false
+		alerts.process_mode = Node.PROCESS_MODE_DISABLED
+		_sync_movers()
+		_update_walkers(0.0)
+		return
 	Game.anim_hide.clear()
 	if not Game.building_fx.is_connected(_on_building_fx):
 		Game.building_fx.connect(_on_building_fx)
-	last_season = -1
 
 
 func _process(delta: float) -> void:
-	if not Game.running or objects == null:
+	if not Game.running or objects == null or offscreen:
 		return
 	if Game.season() != last_season:
 		last_season = Game.season()
@@ -461,6 +473,7 @@ class ObjChunk extends Node2D:
 
 	var d := 0
 	var seg := 0
+	var show_all := false
 
 	func _paint() -> void:
 		var g = Game
@@ -474,7 +487,7 @@ class ObjChunk extends Node2D:
 			var v: int = g.tree_var[i]
 			if bid >= 0:
 				var b: Dictionary = g.buildings[bid]
-				if b.x + b.size - 1 == x and b.y + b.size - 1 == y and not g.anim_hide.has(bid):
+				if b.x + b.size - 1 == x and b.y + b.size - 1 == y and (show_all or not g.anim_hide.has(bid)):
 					_building(b)
 			elif g.wall[i] > 0:
 				_wall(x, y, c)
@@ -486,6 +499,11 @@ class ObjChunk extends Node2D:
 						var sp: Array = g.combo_tiles[i]
 						if sp[0] == sp[1] - 1:
 							Art.rainbow_bridge(cv, c, ax, sp[1], v)
+					elif g.arch_bridge(x, y):
+						# 石拱橋：整段畫在最前一格
+						var sp: Array = g.bridge_span(x, y)
+						if sp[0] == sp[1] - 1:
+							Art.stone_arch(cv, c, sp[2], sp[1], v)
 					else:
 						var dn := Vector2i(-1, 0) if ax else Vector2i(0, -1)
 						var land_n: bool = g.inb(x + dn.x, y + dn.y) and g.terrain[g.idx(x + dn.x, y + dn.y)] != Defs.T.WATER

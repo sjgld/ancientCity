@@ -33,12 +33,12 @@ const FOOD := ["grain", "fish"]
 const LUXURY := ["cloth", "porcelain", "tea"]
 
 const RANKS := [
-	{"name": "村", "pop": 0,     "radius": 22, "reward": 0},
-	{"name": "鎮", "pop": 300,   "radius": 30, "reward": 1500},
-	{"name": "縣", "pop": 1000,  "radius": 38, "reward": 3000},
-	{"name": "州", "pop": 2500,  "radius": 48, "reward": 6000},
-	{"name": "府", "pop": 6000,  "radius": 62, "reward": 12000},
-	{"name": "京", "pop": 15000, "radius": 90, "reward": 30000},
+	{"name": "村", "pop": 0,     "radius": 18, "reward": 0},
+	{"name": "鎮", "pop": 300,   "radius": 24, "reward": 1500},
+	{"name": "縣", "pop": 1000,  "radius": 30, "reward": 3000},
+	{"name": "州", "pop": 2500,  "radius": 38, "reward": 6000},
+	{"name": "府", "pop": 6000,  "radius": 48, "reward": 12000},
+	{"name": "京", "pop": 15000, "radius": 70, "reward": 30000},
 ]
 
 # 自然生長的分區建築，各三級
@@ -247,6 +247,47 @@ static func cn_num(n: int) -> String:
 	if n < 100:
 		return d[n / 10] + "十" + ("" if n % 10 == 0 else d[n % 10])
 	return str(n)
+
+
+## 大數字的中文寫法：八百三十五、七萬三千六百四十九。
+static func cn_big(n: int) -> String:
+	if n < 0:
+		return "負" + cn_big(-n)
+	if n < 10:
+		return cn_num(n)
+	var d := ["〇", "一", "二", "三", "四", "五", "六", "七", "八", "九"]
+	var units := ["", "十", "百", "千"]
+	var out := ""
+	var big := ["", "萬", "億"]
+	var groups := []
+	var m := n
+	while m > 0:
+		groups.append(m % 10000)
+		m /= 10000
+	var zero := false
+	for gi in range(groups.size() - 1, -1, -1):
+		var g: int = groups[gi]
+		if g == 0:
+			zero = true
+			continue
+		if zero or (out != "" and g < 1000):
+			out += "〇"
+		zero = false
+		var s := ""
+		var z := false
+		for k in range(3, -1, -1):
+			var dg: int = (g / int(pow(10, k))) % 10
+			if dg == 0:
+				z = s != ""
+				continue
+			if z:
+				s += "〇"
+				z = false
+			s += d[dg] + units[k]
+		out += s + big[gi]
+	if out.begins_with("一十"):
+		out = out.substr(1)
+	return out
 
 
 static func cargo_name(c: String) -> String:
