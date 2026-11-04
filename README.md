@@ -4,7 +4,9 @@
 
 ## 啟動
 
-- 雙擊 `開始遊戲.cmd` 開始遊戲，或雙擊 `開啟編輯器.cmd` 在 Godot 編輯器中開啟專案。
+- 雙擊 `開始遊戲.cmd` 開始遊戲，`開發模式.cmd` 直接進入測試城，`開啟編輯器.cmd` 在 Godot 編輯器中開啟專案。
+- 三個入口都交給 `scripts/tools/launch.cmd` 找 Godot 4.6，依序找：環境變數 `GODOT`；遊戲資料夾或上一層的 `Godot*.exe`；PATH 上的 `godot`；舊機器上的 `D:\zoo\...`；專案放在 WSL 裡時，改用 WSL 中 `.toolchains` 的 Linux 版（WSLg 開窗、D3D12 走顯卡）。都找不到時會提示去哪下載。
+- 最簡單的做法：從 Godot 官網下載 4.6.1 Windows 版，把 `Godot_v4.6.1-stable_win64.exe` 放進遊戲資料夾。
 - 也可以用任一 Godot 4.6 開啟 `project.godot`。
 
 ## 玩法

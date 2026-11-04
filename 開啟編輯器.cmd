@@ -1,3 +1,3 @@
 @echo off
-cd /d "%~dp0"
-start "" "D:\zoo\.tools\godot\4.6.1\Godot_v4.6.1-stable_mono_win64\Godot_v4.6.1-stable_mono_win64.exe" --editor --path "%~dp0."
+rem See scripts\tools\launch.cmd for how Godot is found and started.
+call "%~dp0scripts\tools\launch.cmd" editor
