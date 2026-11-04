@@ -86,6 +86,9 @@ func _ready() -> void:
 	root.theme = _make_theme()
 	add_child(root)
 	_build_icon_atlas()
+	root.resized.connect(func():
+		_fit_book()
+		_place_log())
 	_build_log()
 	_build_quests()
 	_build_minimap()
@@ -961,6 +964,16 @@ func _show_page(id: String) -> void:
 		if w[0] == id:
 			book_title.text = w[1]
 	_fill_window(id, true)
+	_fit_book()
+
+
+## 案牘依畫面大小定內頁高度並置中；畫面改變大小時重算。
+func _fit_book() -> void:
+	if not book.visible:
+		return
+	var h := clampf(root.size.y - 300.0, 320.0, 560.0)
+	for k in windows:
+		windows[k].custom_minimum_size = Vector2(840, h)
 	book.reset_size()
 	book.position = Vector2(maxf(40, (root.size.x - book.size.x) * 0.5 - 30), maxf(TOP_H + 16, (root.size.y - book.size.y) * 0.5))
 	book_marks.position = Vector2(book.position.x + book.size.x + 2, book.position.y + 44)
