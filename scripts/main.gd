@@ -20,6 +20,13 @@ var selected := -1
 var selected_vehicle := -1
 var hover_text := ""
 var bot_mode := false
+
+# 介面縮放：依視窗大小等比放大，字型以實際大小重新點陣化，放大後仍清晰。
+const BASE_SIZE := Vector2(1600, 900)
+const MIN_LOGICAL := Vector2(1440, 810)   # 介面排版所需的最小邏輯尺寸（天頭需約一千四百四十寬）
+const UI_SCALES := [1.0, 1.15, 1.3, 0.85]
+const SETTINGS_PATH := "user://settings.cfg"
+var ui_scale_idx := 0
 var selected_tile := Vector2i(-1, -1)
 var route_first := -1
 var title_mode := true
@@ -29,6 +36,10 @@ var auto := false
 
 
 func _ready() -> void:
+	_load_settings()
+	_fit_window()
+	get_window().size_changed.connect(_apply_scale)
+	_apply_scale()
 	cam = Camera2D.new()
 	add_child(cam)
 	cam.make_current()
@@ -64,6 +75,59 @@ func _ready() -> void:
 			_ui_test()
 		else:
 			_run_shots()
+
+
+## 大螢幕上開窗時佔可用範圍約八成五、置中；命令列指定解析度或錄影時不動。
+func _fit_window() -> void:
+	if "--resolution" in OS.get_cmdline_args() or OS.has_feature("movie") or DisplayServer.get_name() == "headless" \
+			or not OS.get_cmdline_user_args().is_empty():
+		return
+	var win := get_window()
+	if win.mode != Window.MODE_WINDOWED:
+		return
+	var ur := DisplayServer.screen_get_usable_rect(win.current_screen)
+	var fit := minf(ur.size.x * 0.85 / BASE_SIZE.x, ur.size.y * 0.85 / BASE_SIZE.y)
+	if fit <= 1.05:
+		return
+	var sz := Vector2i(BASE_SIZE * fit)
+	win.size = sz
+	win.position = ur.position + (ur.size - sz) / 2
+
+
+func _apply_scale() -> void:
+	var win := get_window()
+	var ws := Vector2(win.size)
+	if ws.x < 2.0 or ws.y < 2.0:
+		return
+	var s: float = clampf(minf(ws.x / BASE_SIZE.x, ws.y / BASE_SIZE.y), 0.75, 4.0) * UI_SCALES[ui_scale_idx]
+	# 放大後邏輯畫面不得小於排版所需，否則天頭地頭會擠在一起
+	s = minf(s, minf(ws.x / MIN_LOGICAL.x, ws.y / MIN_LOGICAL.y))
+	var cs := Vector2i(roundi(ws.x / s), roundi(ws.y / s))
+	if win.content_scale_size != cs:
+		win.content_scale_size = cs
+
+
+func ui_scale_label() -> String:
+	return "%d%%" % roundi(UI_SCALES[ui_scale_idx] * 100)
+
+
+func cycle_ui_scale() -> void:
+	ui_scale_idx = (ui_scale_idx + 1) % UI_SCALES.size()
+	_apply_scale()
+	_save_settings()
+
+
+func _load_settings() -> void:
+	var cf := ConfigFile.new()
+	if cf.load(SETTINGS_PATH) == OK:
+		ui_scale_idx = clampi(int(cf.get_value("ui", "scale", 0)), 0, UI_SCALES.size() - 1)
+
+
+func _save_settings() -> void:
+	var cf := ConfigFile.new()
+	cf.load(SETTINGS_PATH)
+	cf.set_value("ui", "scale", ui_scale_idx)
+	cf.save(SETTINGS_PATH)
 
 
 func _on_map_reset() -> void:
@@ -344,6 +408,18 @@ func _press(t: Vector2i) -> void:
 					ui.open_window("routes")
 				route_first = -1
 		_:
+			var al: Dictionary = world.alerts.hit(get_global_mouse_position())
+			if not al.is_empty():
+				Sfx.play("click")
+				if al.count > 1:
+					focus_tile(al.tile, 1.2)
+				else:
+					selected = al.id
+					selected_vehicle = -1
+					selected_tile = Vector2i(-1, -1)
+					ui.show_info()
+				cursor.queue_redraw()
+				return
 			selected_vehicle = _vehicle_at(to_tile_f(get_global_mouse_position()))
 			if selected_vehicle >= 0:
 				selected = -1
@@ -354,6 +430,14 @@ func _press(t: Vector2i) -> void:
 				selected_tile = t
 			ui.show_info()
 	cursor.queue_redraw()
+
+
+## 鏡頭滑到某格；zoom 大於零時一併縮放。
+func focus_tile(t: Vector2i, zoom: float = -1.0) -> void:
+	var tw := create_tween().set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	tw.tween_property(cam, "position", WorldView.tile_pos(t.x, t.y), 0.6)
+	if zoom > 0:
+		tw.parallel().tween_property(cam, "zoom", Vector2(zoom, zoom), 0.6)
 
 
 func _release(t: Vector2i) -> void:
@@ -449,6 +533,30 @@ func _run_shots() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_shot("06_overlay.png")
+	# 虹橋特寫
+	world.overlay.mode = ""
+	world.overlay.queue_redraw()
+	ui.close_windows()
+	selected = -1
+	ui.show_info()
+	var bk := 0
+	for i in Game.combo_tiles:
+		var sp: Array = Game.combo_tiles[i]
+		if sp[0] == sp[1] - 1:
+			var n: int = sp[1]
+			var tx: int = i % Game.N
+			var ty: int = i / Game.N
+			var ax: bool = Game._is_bridge(tx - 1, ty)
+			var mid := Vector2(tx - (n - 1) * 0.5, ty) if ax else Vector2(tx, ty - (n - 1) * 0.5)
+			cam.position = WorldView.tile_pos(mid.x, mid.y) - Vector2(0, 20)
+			cam.zoom = Vector2(2.6, 2.6)
+			for f in 4:
+				await get_tree().process_frame
+			_shot("11_bridge_%d.png" % bk)
+			bk += 1
+			if bk >= 3:
+				break
+	cam.zoom = Vector2.ONE
 	ui.show_title(true)
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -517,8 +625,51 @@ func _ui_test() -> void:
 	for i in 60:
 		await get_tree().process_frame
 	_shot("08_uitest.png")
+	# 警示籤、邸報定位、詔令蓋印
+	Game.speed = 0
+	var hb := {}
+	for bb in Game.buildings.values():
+		if bb.type == "house":
+			hb = bb
+	if not hb.is_empty():
+		hb.fire = 10
+		Game.burning[hb.id] = true
+		Game.mark_b(hb)
+		Game.log_msg("%s走水了！" % Game.bname(hb), 2, Vector2i(hb.x, hb.y))
+	for i in 40:
+		await get_tree().process_frame
+	ui.log_panel._gui_input(_click_at(ui.log_panel.line_rects[0].get_center()))
+	for i in 40:
+		await get_tree().process_frame
+	print("log click selected=", selected, " fire house=", hb.get("id", -1))
+	var q: Array = Game.current_quests(1)
+	print("quest now=", q[0].id if q.size() > 0 else "-", " progress=", Game.quest_progress(q[0].id) if q.size() > 0 else [])
+	ui._on_quest_done("x")
+	for i in 6:
+		await get_tree().process_frame
+	_shot("10_alerts.png")
+	# 介面大小：調到最大，檢查排版，再復原
+	cycle_ui_scale()
+	cycle_ui_scale()
+	ui._toggle_menu()
+	for i in 6:
+		await get_tree().process_frame
+	print("ui scale=", ui_scale_label(), " logical=", get_window().content_scale_size)
+	_shot("12_scale130.png")
+	ui._toggle_menu()
+	cycle_ui_scale()
+	cycle_ui_scale()
+	print("ui scale reset=", ui_scale_label())
 	print("UI TEST DONE")
 	get_tree().quit()
+
+
+func _click_at(p: Vector2) -> InputEventMouseButton:
+	var e := InputEventMouseButton.new()
+	e.button_index = MOUSE_BUTTON_LEFT
+	e.pressed = true
+	e.position = p
+	return e
 
 
 func _gallery() -> void:

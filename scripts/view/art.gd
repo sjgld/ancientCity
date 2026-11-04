@@ -1326,10 +1326,19 @@ static func wall_tile(ci, c: Vector2, conn: Array, gate: bool, road_ax_x: bool) 
 			box(ci, c + iso(0, 0.12 + k * 0.22), t, 0.04, 3, col, h, true)
 
 
-static func bridge(ci, c: Vector2, ax_x: bool, stone: bool) -> void:
+static func bridge(ci, c: Vector2, ax_x: bool, stone: bool, ramp_neg: bool = false, ramp_pos: bool = false) -> void:
 	var col := STONE.lightened(0.05) if stone else WOOD_L
 	var a := 0.5 if ax_x else 0.22
 	var b := 0.22 if ax_x else 0.5
+	# 臨岸一端加斜板，接到岸上路面
+	var f := func(u: float, w: float, h: float) -> Vector2:
+		return P(c, u, w, h) if ax_x else P(c, w, u, h)
+	for e in [[ramp_neg, -1.0], [ramp_pos, 1.0]]:
+		if not e[0]:
+			continue
+		var sg: float = e[1]
+		poly(ci, [f.call(0.5 * sg, -0.22, 7), f.call(0.82 * sg, -0.22, 0), f.call(0.82 * sg, 0.22, 0), f.call(0.5 * sg, 0.22, 7)], col.darkened(0.05))
+		poly(ci, [f.call(0.5 * sg, 0.22, 7), f.call(0.82 * sg, 0.22, 0), f.call(0.82 * sg, 0.22, -2), f.call(0.5 * sg, 0.22, 4)], col.darkened(0.3))
 	for u in [-0.3, 0.3]:
 		var q := P(c, u if ax_x else 0.0, 0.0 if ax_x else u)
 		ci.draw_line(q + Vector2(0, 2), q - Vector2(0, 5), col.darkened(0.35), 3.0)
@@ -1342,61 +1351,105 @@ static func bridge(ci, c: Vector2, ax_x: bool, stone: bool) -> void:
 		ci.draw_line(q, q + Vector2(0, 3), col.darkened(0.3), 1.0)
 
 
-## 虹橋：整段橋面依拱線抬起，橋下木樑交錯成拱，兩側欄杆，橋上有攤販。k 為本格在橋中的序，n 為橋長。
-static func rainbow_bridge(ci, c: Vector2, ax_x: bool, k: int, n: int, v: int) -> void:
-	var wd := 0.24
-	var H := clampf(6.0 + n * 4.0, 10.0, 24.0)
+## 虹橋：整段一次畫成。c 為最前（最近觀者）一格的中心，n 為跨水格數。
+## 仿《清明上河圖》木構疊梁拱：兩岸石砌橋臺，橋面由岸邊緩起成一道弧，
+## 橋下兩套長短不同的直梁交錯成拱，橋上兩側有傘下攤販與行人。
+static func rainbow_bridge(ci, c: Vector2, ax_x: bool, n: int, v: int) -> void:
 	var f := func(u: float, w: float, h: float) -> Vector2:
 		return P(c, u, w, h) if ax_x else P(c, w, u, h)
-	var hh := func(u: float) -> float:
-		return 4.0 + H * sin(PI * (k + u + 0.5) / n)
-	var steps := 6
+	var u0 := -(n - 1) - 0.5 - 0.32
+	var u1 := 0.5 + 0.32
+	var span := u1 - u0
+	var H := clampf(9.0 + n * 4.5, 14.0, 30.0)
+	var deck := func(u: float) -> float:
+		return H * sin(PI * clampf((u - u0) / span, 0.0, 1.0))
+	var wd := 0.27
+	var wood := Color(0.55, 0.37, 0.22)
+	var dark := wood.darkened(0.42)
+	var steps := 10 * n + 10
 	var us := []
 	for j in steps + 1:
-		us.append(-0.5 + float(j) / steps)
-	var wood := Color(0.5, 0.33, 0.2)
-	# 遠側欄杆
+		us.append(lerpf(u0, u1, float(j) / steps))
+	# 兩岸橋臺
+	for e in [u0 + 0.16, u1 - 0.16]:
+		var bc: Vector2 = f.call(e, 0.0, 0.0)
+		box(ci, bc, 0.16 if ax_x else wd + 0.05, wd + 0.05 if ax_x else 0.16, 4, STONE, -1.5, true, false)
+	# 遠側拱梁與欄杆
+	_rainbow_ribs(ci, f, us, u0, span, -wd, deck, dark.darkened(0.15), 1.0)
 	var far := []
 	for u in us:
-		far.append(f.call(u, -wd, hh.call(u) + 5))
-	line(ci, far, wood.darkened(0.2), 1.2)
-	# 橋下木拱（兩側各兩道，之間交錯斜撐）
-	for w in [-wd, wd]:
-		var r0 := []
-		var r1 := []
-		for u in us:
-			r0.append(f.call(u, w, hh.call(u) - 2.5))
-			r1.append(f.call(u, w, maxf(hh.call(u) - 8.0, 0.0)))
-		line(ci, r0, wood.darkened(0.35), 2.0)
-		line(ci, r1, wood.darkened(0.25), 2.0)
-		for j in steps:
-			ci.draw_line(r0[j], r1[j + 1], wood.darkened(0.15), 1.2)
-			ci.draw_line(r1[j], r0[j + 1], wood.darkened(0.15), 1.2)
-	# 橋面
+		far.append(f.call(u, -wd, deck.call(u) + 6.0))
+	for j in range(0, us.size(), 4):
+		ci.draw_line(f.call(us[j], -wd, deck.call(us[j])), far[j], wood.darkened(0.35), 1.0)
+	line(ci, far, wood.darkened(0.3), 1.3)
+	# 橋面與橫鋪木板
+	var dcol := snowy(WOOD_L.lightened(0.06), 0.6)
 	var top := []
 	for u in us:
-		top.append(f.call(u, -wd, hh.call(u)))
+		top.append(f.call(u, -wd, deck.call(u)))
 	for j in range(steps, -1, -1):
-		top.append(f.call(us[j], wd, hh.call(us[j])))
-	poly(ci, top, WOOD_L.lightened(0.05))
+		top.append(f.call(us[j], wd, deck.call(us[j])))
+	poly(ci, top, dcol)
+	for j in range(2, steps - 1, 2):
+		ci.draw_line(f.call(us[j], -wd, deck.call(us[j])), f.call(us[j], wd, deck.call(us[j])), dcol.darkened(0.12), 1.0)
+	# 橋上攤販與行人（靠遠側，不擋欄杆）
+	if n >= 2:
+		var cols := [Color(0.93, 0.88, 0.74), RED, Color(0.35, 0.5, 0.62)]
+		for k in 2:
+			var su := lerpf(u0, u1, 0.24 + k * 0.52)
+			var sp: Vector2 = f.call(su, -0.1, deck.call(su))
+			ci.draw_rect(Rect2(sp - Vector2(4, 3), Vector2(8, 3)), wood.darkened(0.2))
+			_parasol(ci, sp, 11, 7, cols[(v + k) % cols.size()])
+		var people := [Color(0.3, 0.35, 0.5), Color(0.55, 0.3, 0.25), Color(0.4, 0.45, 0.35), Color(0.75, 0.72, 0.65)]
+		for k in mini(2 + n, 6):
+			var pu := lerpf(u0, u1, 0.12 + (k * 0.37 + v * 0.11 - floorf(k * 0.37 + v * 0.11)) * 0.76)
+			var pp: Vector2 = f.call(pu, 0.06 if k % 2 == 0 else -0.04, deck.call(pu))
+			ci.draw_line(pp, pp - Vector2(0, 5), people[(k + v) % people.size()], 2.2)
+			ci.draw_circle(pp - Vector2(0, 6.4), 1.3, Color(0.85, 0.72, 0.58))
+	# 近側橋面厚度
 	var side := []
 	for u in us:
-		side.append(f.call(u, wd, hh.call(u)))
+		side.append(f.call(u, wd, deck.call(u)))
 	for j in range(steps, -1, -1):
-		side.append(f.call(us[j], wd, hh.call(us[j]) - 2.5))
-	poly(ci, side, wood.darkened(0.1))
-	# 橋上攤販
-	if n >= 3 and k % 2 == 1:
-		_parasol(ci, f.call(0.0, -0.08, hh.call(0.0)), 10, 7, [Color(0.93, 0.88, 0.74), RED][v % 2])
+		side.append(f.call(us[j], wd, deck.call(us[j]) - 3.0))
+	poly(ci, side, wood.darkened(0.15))
+	# 近側拱梁
+	_rainbow_ribs(ci, f, us, u0, span, wd, deck, dark, 1.0)
 	# 近側欄杆
 	var near := []
-	for j in steps + 1:
+	for u in us:
+		near.append(f.call(u, wd, deck.call(u) + 6.0))
+	for j in range(0, us.size(), 4):
+		ci.draw_line(f.call(us[j], wd, deck.call(us[j])), near[j], wood.darkened(0.35), 1.2)
+	line(ci, near, wood.darkened(0.32), 1.6)
+	var mid := []
+	for u in us:
+		mid.append(f.call(u, wd, deck.call(u) + 3.0))
+	line(ci, mid, wood.darkened(0.2), 1.0)
+
+
+## 虹橋拱梁：一套三節、一套四節的直梁交錯成拱，梁頭以橫木相扣，再以短柱撐住橋面。
+static func _rainbow_ribs(ci, f: Callable, us: Array, u0: float, span: float, w: float, deck: Callable, col: Color, k: float) -> void:
+	var a0 := u0 + span * 0.1
+	var a1 := u0 + span * 0.9
+	var sets := [[0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0], [0.0, 0.25, 0.5, 0.75, 1.0]]
+	for si in sets.size():
+		var pts := []
+		for t in sets[si]:
+			var u := lerpf(a0, a1, t)
+			var h := -1.0
+			if t > 0.0 and t < 1.0:
+				h = deck.call(u) - (6.0 if si == 0 else 9.0)
+			pts.append(f.call(u, w, h))
+		line(ci, pts, col, 2.6)
+		for j in range(1, pts.size() - 1):
+			ci.draw_circle(pts[j], 1.8, col.darkened(0.2))
+	for j in range(2, us.size() - 2, 3):
 		var u: float = us[j]
-		var q: Vector2 = f.call(u, wd, hh.call(u))
-		if j % 2 == 0:
-			ci.draw_line(q, q - Vector2(0, 5), wood.darkened(0.3), 1.2)
-		near.append(q - Vector2(0, 5))
-	line(ci, near, wood.darkened(0.3), 1.4)
+		var t := (u - a0) / (a1 - a0)
+		if t <= 0.05 or t >= 0.95:
+			continue
+		ci.draw_line(f.call(u, w, deck.call(u) - 3.0), f.call(u, w, deck.call(u) - 7.0), col.lightened(0.15), 1.0)
 
 
 ## 格局成立後加在建築上的點綴。

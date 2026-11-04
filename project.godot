@@ -4,10 +4,12 @@ config_version=5
 
 [application]
 
-config/name="上河築城"
+config/name="水村山郭"
 config/description="以中國古代為背景的城鎮建設與貨運經營遊戲"
 run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.6")
+config/icon="res://icon.png"
+config/windows_native_icon="res://icon.ico"
 
 [autoload]
 

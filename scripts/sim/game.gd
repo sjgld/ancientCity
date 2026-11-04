@@ -61,6 +61,7 @@ var stats := {}
 var report := {"income": {}, "expense": {}}
 var trade_month := 0.0
 var drought := 0
+var plague_t := 0      # 疫病餘日，期間缺醫的民居掛警示籤
 var bumper := false
 var food_short := 0.0
 var lux_ratio := 1.0
@@ -119,8 +120,11 @@ func season() -> int:
 	return Defs.season_of(month)
 
 
-func log_msg(text: String, kind: int = 0) -> void:
-	log_lines.push_front({"t": date_str(), "text": text, "kind": kind})
+func log_msg(text: String, kind: int = 0, at: Vector2i = NO_CELL) -> void:
+	var e := {"t": date_str(), "text": text, "kind": kind}
+	if at != NO_CELL:
+		e["at"] = at
+	log_lines.push_front(e)
 	if log_lines.size() > 60:
 		log_lines.pop_back()
 	message.emit(text, kind)
@@ -832,6 +836,7 @@ func _monthly() -> void:
 			dirty[i] = true
 	if drought > 0:
 		drought -= 1
+	plague_t = maxi(0, plague_t - 30)
 	recount()
 	_check_rank()
 	history.append({"pop": stats.pop, "money": money, "happy": stats.happy, "trade": report.income.get("貿易", 0.0), "net": report.get("net", 0.0)})
@@ -1225,7 +1230,9 @@ func _check_rank() -> void:
 		var rw: int = Defs.RANKS[rank]["reward"]
 		money += rw
 		connectivity_dirty = true
-		log_msg("聖旨到！%s人丁興旺，升格為「%s」，賞銀%d兩。" % [city_name, rank_name(), rw], 1)
+		var yb: Dictionary = buildings.get(yamen_id, {})
+		log_msg("聖旨到！%s人丁興旺，升格為「%s」，賞銀%d兩。" % [city_name, rank_name(), rw], 1,
+			Vector2i(yb.x, yb.y) if not yb.is_empty() else NO_CELL)
 		rank_changed.emit(rank)
 
 
@@ -1270,6 +1277,16 @@ func _check_combos() -> void:
 			seen[idx(p.x, p.y)] = true
 			p += d
 		if span.size() < 2:
+			continue
+		# 虹橋須是一道乾淨的跨河橋：橋旁不得另有橋面交會或並行
+		var perp := Vector2i(d.y, d.x)
+		var crossed := false
+		for k in span:
+			var q := Vector2i(k % N, k / N)
+			if _is_bridge(q.x + perp.x, q.y + perp.y) or _is_bridge(q.x - perp.x, q.y - perp.y):
+				crossed = true
+				break
+		if crossed:
 			continue
 		var shops := {}
 		for e in [s - d, p]:
@@ -1380,7 +1397,7 @@ func _check_combos() -> void:
 		if not tiles.has(i):
 			dirty[i] = true
 	for i in tiles:
-		if not combo_tiles.has(i):
+		if not combo_tiles.has(i) or combo_tiles[i] != tiles[i]:
 			dirty[i] = true
 	combo_tiles = tiles
 	for b in buildings.values():
@@ -1397,7 +1414,12 @@ func _check_combos() -> void:
 	for id in counts:
 		if not combos_found.has(id):
 			combos_found[id] = date_str()
-			log_msg("格局成立：「%s」。%s" % [Defs.combo(id).name, Defs.combo(id).verse], 1)
+			var at := NO_CELL
+			for b in buildings.values():
+				if b.get("combo", "") == id:
+					at = Vector2i(b.x, b.y)
+					break
+			log_msg("格局成立：「%s」。%s" % [Defs.combo(id).name, Defs.combo(id).verse], 1, at)
 			combo_found.emit(id)
 
 
@@ -1462,6 +1484,27 @@ func _quest_met(id: String) -> bool:
 	return false
 
 
+## 詔令進度：可計數者回傳 [目前, 目標]，否則回傳空陣列。
+func quest_progress(id: String) -> Array:
+	match id:
+		"res":
+			return [zone.count(Defs.Z.RES) + count_type("house"), 10]
+		"farm":
+			return [count_type("farm"), 5]
+		"pop50":
+			return [stats.pop, 50]
+		"shop":
+			return [count_type("shop"), 3]
+		"zhen", "xian", "zhou", "fu", "jing":
+			var r: int = ["zhen", "xian", "zhou", "fu", "jing"].find(id) + 1
+			return [stats.pop, Defs.RANKS[r]["pop"]]
+		"trade":
+			return [int(report.income.get("貿易", 0.0)), 100]
+		"lux":
+			return [int(stock.get("cloth", 0.0) + stock.get("porcelain", 0.0)), 20]
+	return []
+
+
 func _check_quests() -> void:
 	# 只檢查最前面幾條，循序漸進
 	for q in current_quests(3):
@@ -1473,6 +1516,39 @@ func _check_quests() -> void:
 			else:
 				log_msg("詔令達成：「%s」。%s已成天下名都！" % [q.text, city_name], 1)
 			quest_done.emit(q.id)
+
+
+# ───────────────────────── 警示 ─────────────────────────
+
+const PROBLEM_ORDER := ["fire", "plague", "road", "water", "raw", "staff"]
+const PROBLEM_TEXT := {"fire": "失火", "plague": "疫病", "road": "斷路", "water": "缺水", "raw": "無原料", "staff": "缺工"}
+
+
+## 一棟建築目前最要緊的問題：{"kind", "text"}；無事則回傳空字典。只讀，不改模擬。
+func problem_of(b: Dictionary) -> Dictionary:
+	var kind := ""
+	if b.fire > 0:
+		kind = "fire"
+	elif b.age < 6 or b.type in ["town", "yamen"]:
+		return {}
+	else:
+		var i := idx(b.x, b.y)
+		var d: Dictionary = Defs.B.get(b.type, {})
+		var works: bool = is_grow(b) or d.has("produce") or d.has("cover") or d.get("jobs", 0) > 0
+		if b.type == "house" and plague_t > 0 and cover["health"][i] == 0:
+			kind = "plague"
+		elif works and not b.conn and not d.has("produce") and b.type not in ["station", "dock"]:
+			kind = "road"
+		elif b.type == "house" and cover["water"][i] == 0 and b.age >= 60 and 				(b.level >= 2 or (cover["market"][i] > 0 and b.happy >= 50)):
+			# 瓦屋以上缺水會降級；茅舍只在「只差水井」時才提醒
+			kind = "water"
+		elif d.has("consume") and b.age >= 40 and b.last <= 0.01:
+			kind = "raw"
+		elif d.has("produce") and b.conn and stats.staff < 0.6:
+			kind = "staff"
+	if kind == "":
+		return {}
+	return {"kind": kind, "text": PROBLEM_TEXT[kind]}
 
 
 # ───────────────────────── 災異與事件 ─────────────────────────
@@ -1495,10 +1571,10 @@ func _update_fires() -> void:
 		if b.fire <= 0:
 			burning.erase(id)
 			if rng.randf() < 0.25 + 0.7 * fc:
-				log_msg("%s火勢已被撲滅。" % bname(b), 0)
+				log_msg("%s火勢已被撲滅。" % bname(b), 0, Vector2i(b.x, b.y))
 				mark_b(b)
 			else:
-				log_msg("%s焚毀殆盡。" % bname(b), 2)
+				log_msg("%s焚毀殆盡。" % bname(b), 2, Vector2i(b.x, b.y))
 				remove_building(id)
 
 
@@ -1513,7 +1589,7 @@ func _events() -> void:
 			b.fire = 10
 			burning[b.id] = true
 			mark_b(b)
-			log_msg("%s走水了！" % bname(b), 2)
+			log_msg("%s走水了！" % bname(b), 2, Vector2i(b.x, b.y))
 	var pop: int = stats.pop
 	if pop < 40:
 		return
@@ -1532,15 +1608,18 @@ func _events() -> void:
 	var hcov := _avg_cover_houses("health")
 	if rng.randf() < 0.025 and hcov < 0.5:
 		var lost := 0
+		var at := NO_CELL
 		for b in buildings.values().duplicate():
 			if b.type == "house" and rng.randf() < 0.12:
+				at = Vector2i(b.x, b.y)
 				if b.level > 1:
 					b.level -= 1
 					mark_b(b)
 				else:
 					remove_building(b.id)
 				lost += 1
-		log_msg("疫病流行，%s戶染疾。廣設醫館可防。" % Defs.cn_num(lost), 2)
+		plague_t = 60
+		log_msg("疫病流行，%s戶染疾。廣設醫館可防。" % Defs.cn_num(lost), 2, at)
 	# 盜匪
 	if rng.randf() < 0.03 and _avg_cover_houses("security") < 0.5 and money > 500:
 		var l := money * 0.08
@@ -1596,7 +1675,7 @@ func _flood() -> void:
 				else:
 					remove_building(b.id)
 		if hit > 0:
-			log_msg("河水暴漲，沖毀%s處屋舍田畝。施行「興修水利」可防。" % Defs.cn_num(hit), 2)
+			log_msg("河水暴漲，沖毀%s處屋舍田畝。施行「興修水利」可防。" % Defs.cn_num(hit), 2, Vector2i(x, y))
 		return
 
 
@@ -1678,7 +1757,7 @@ func create_route(a_id: int, b_id: int) -> String:
 	next_route += 1
 	routes[r.id] = r
 	add_vehicle(r.id, kind)
-	log_msg("開闢新路線：%s ⇄ %s。" % [bname(a), bname(b)], 1)
+	log_msg("開闢新路線：%s ⇄ %s。" % [bname(a), bname(b)], 1, Vector2i(a.x, a.y))
 	return ""
 
 
@@ -1926,10 +2005,25 @@ func _cover_line(i: int) -> String:
 
 
 ## 一項條件：達成者淡色打勾，未達成者紅叉，可附數值門檻。
-static func _need(ok: bool, text: String) -> String:
+static func _need(ok: bool, text: String, tool: String = "") -> String:
 	if ok:
 		return "{i:check} [color=%s]%s[/color]\n" % [C_NOTE, text.replace("[b]", "").replace("[/b]", "")]
+	if tool != "":
+		return "{i:cross} %s　[url=%s][color=#2e5a6f]〔去建〕[/color][/url]\n" % [text, tool]
 	return "{i:cross} %s\n" % text
+
+
+## 三階升級線：已過者淡、目前者劃重點、未到者灰。
+static func _ladder(names: Array, lvl: int) -> String:
+	var parts := []
+	for k in names.size():
+		if k + 1 == lvl:
+			parts.append("[k]%s[/k]" % names[k])
+		elif k + 1 < lvl:
+			parts.append("[color=%s]%s[/color]" % [C_NOTE, names[k]])
+		else:
+			parts.append("[color=#b5aa98]%s[/color]" % names[k])
+	return "　›　".join(parts) + "\n"
 
 
 func building_info(b: Dictionary) -> String:
@@ -1943,6 +2037,8 @@ func building_info(b: Dictionary) -> String:
 		s += "{i:note} [color=%s]興建中……[/color]\n" % C_NOTE
 	elif b.type != "town" and b.type != "yamen" and not b.conn:
 		s += "{i:bad} [warn]未通達：須以道路連接縣衙[/warn]\n\n"
+	if is_grow(b):
+		s += _ladder(Defs.GROW[b.type]["names"], b.level)
 	match b.type:
 		"house":
 			s += "[stats]people,%d,居民;%s,%d,民心,%s;land,%d,地價[/stats]" % [
@@ -1951,13 +2047,13 @@ func building_info(b: Dictionary) -> String:
 				s += "\n" + _head("升為%s還缺" % Defs.GROW.house.names[b.level]) + "\n"
 				var rows := []
 				if b.level == 1:
-					rows = [[cover["water"][i] > 0, "[b]水井[/b]"], [cover["market"][i] > 0, "[b]市集[/b]"], [b.happy >= 50, "民心 [b]%d[/b]／50" % int(b.happy)]]
+					rows = [[cover["water"][i] > 0, "[b]水井[/b]", "b:well"], [cover["market"][i] > 0, "[b]市集[/b]", "zone_2"], [b.happy >= 50, "民心 [b]%d[/b]／50" % int(b.happy), ""]]
 				else:
-					rows = [[cover["edu"][i] > 0, "[b]私塾[/b]或[b]書院[/b]"], [cover["faith"][i] > 0 or cover["fun"][i] > 0, "[b]寺廟[/b]或[b]戲樓[/b]"],
-						[lv[i] >= 45, "地價 [b]%d[/b]／45" % int(lv[i])], [_lux_stock() >= 3, "城中有[b]綢緞、瓷器或茶[/b]"], [b.happy >= 62, "民心 [b]%d[/b]／62" % int(b.happy)]]
+					rows = [[cover["edu"][i] > 0, "[b]私塾[/b]或[b]書院[/b]", "b:school"], [cover["faith"][i] > 0 or cover["fun"][i] > 0, "[b]寺廟[/b]或[b]戲樓[/b]", "b:temple"],
+						[lv[i] >= 45, "地價 [b]%d[/b]／45" % int(lv[i]), "b:garden"], [_lux_stock() >= 3, "城中有[b]綢緞、瓷器或茶[/b]", "b:mulberry"], [b.happy >= 62, "民心 [b]%d[/b]／62" % int(b.happy), ""]]
 				rows.sort_custom(func(a, c): return not a[0] and c[0])
 				for r in rows:
-					s += _need(r[0], r[1])
+					s += _need(r[0], r[1], r[2])
 			else:
 				s += "[color=%s]已是最高一階。[/color]\n" % C_NOTE
 		"shop":
@@ -1983,6 +2079,14 @@ func building_info(b: Dictionary) -> String:
 			var st := []
 			if d.has("produce"):
 				st.append("industry,%.0f,上月產出" % b.last)
+				var ins := []
+				for c in d.get("consume", {}):
+					ins.append("[b]%s[/b] %d" % [Defs.cargo_name(c), int(d.consume[c])])
+				var outs := []
+				for c in d.produce:
+					outs.append("[b]%s[/b] %d" % [Defs.cargo_name(c), int(d.produce[c])])
+				s += "{i:industry} %s%s　[color=%s]每月，滿員時[/color]\n" % [
+					("、".join(ins) + " → ") if ins.size() > 0 else "", "、".join(outs), C_NOTE]
 			if d.get("jobs", 0) > 0:
 				st.append("people,%d,職缺" % d.jobs)
 			if d.upkeep > 0:

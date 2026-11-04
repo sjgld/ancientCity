@@ -23,6 +23,7 @@ var ground_root: Node2D
 var overlay: Overlay
 var fx: FX
 var anim: AnimLayer
+var alerts: AlertLayer
 var ground_chunks: Array = []
 var obj_chunks := {}
 var movers := {}
@@ -76,6 +77,9 @@ func setup(camera: Camera2D) -> void:
 	anim = AnimLayer.new()
 	anim.view = self
 	add_child(anim)
+	alerts = AlertLayer.new()
+	alerts.view = self
+	add_child(alerts)
 	Game.anim_hide.clear()
 	if not Game.building_fx.is_connected(_on_building_fx):
 		Game.building_fx.connect(_on_building_fx)
@@ -478,10 +482,15 @@ class ObjChunk extends Node2D:
 				if g.terrain[i] == Defs.T.WATER:
 					var ax: bool = (g.inb(x + 1, y) and g.road[g.idx(x + 1, y)] > 0) or (g.inb(x - 1, y) and g.road[g.idx(x - 1, y)] > 0)
 					if g.combo_tiles.has(i):
+						# 整段虹橋畫在最前一格，其餘各格不畫
 						var sp: Array = g.combo_tiles[i]
-						Art.rainbow_bridge(cv, c, ax, sp[0], sp[1], v)
+						if sp[0] == sp[1] - 1:
+							Art.rainbow_bridge(cv, c, ax, sp[1], v)
 					else:
-						Art.bridge(cv, c, ax, g.road[i] == 2)
+						var dn := Vector2i(-1, 0) if ax else Vector2i(0, -1)
+						var land_n: bool = g.inb(x + dn.x, y + dn.y) and g.terrain[g.idx(x + dn.x, y + dn.y)] != Defs.T.WATER
+						var land_p: bool = g.inb(x - dn.x, y - dn.y) and g.terrain[g.idx(x - dn.x, y - dn.y)] != Defs.T.WATER
+						Art.bridge(cv, c, ax, g.road[i] == 2, land_n, land_p)
 			else:
 				var t: int = g.terrain[i]
 				if t == Defs.T.FOREST:
@@ -935,3 +944,130 @@ class Overlay extends Node2D:
 					continue
 				var c := Vector2((x - y) * 32.0, (x + y) * 16.0)
 				cv.draw_colored_polygon(PackedVector2Array([c + Art.iso(-0.5, -0.5), c + Art.iso(0.5, -0.5), c + Art.iso(0.5, 0.5), c + Art.iso(-0.5, 0.5)]), col)
+
+
+# ───────────────────────── 警示籤 ─────────────────────────
+
+## 出事的建築上方掛一張小紙籤；全景時同一街區合併為帶數字的一張。點擊可打開冊頁。
+class AlertLayer extends Node2D:
+	const ICON := {"fire": "fire", "plague": "bad", "road": "road", "water": "water", "raw": "industry", "staff": "people"}
+	const RED := ["fire", "plague"]
+	var view
+	var items: Array = []
+	var hits: Array = []
+	var scan_t := 0.0
+	var sig := ""
+	var last_zoom := -1.0
+	var last_hover := -2
+
+	func _ready() -> void:
+		z_index = 8
+
+	## 只在內容、縮放或滑鼠所指改變時重畫，平時不耗效能。
+	func _process(delta: float) -> void:
+		scan_t -= delta
+		var z: float = view.cam.zoom.x
+		if scan_t <= 0.0 or (z < 0.6) != (last_zoom < 0.6):
+			scan_t = 0.5
+			_scan()
+		var h := -1
+		var mp := get_global_mouse_position()
+		for k in range(hits.size() - 1, -1, -1):
+			if hits[k][0].has_point(mp):
+				h = k
+				break
+		if z != last_zoom or h != last_hover:
+			last_zoom = z
+			last_hover = h
+			queue_redraw()
+
+	func _scan() -> void:
+		var raw := []
+		for b in Game.buildings.values():
+			var p: Dictionary = Game.problem_of(b)
+			if p.is_empty():
+				continue
+			var h: float = (b.size - 1) * 0.5
+			var c := Vector2((b.x - b.y) * 32.0, (b.x + h + b.y + h) * 16.0)
+			raw.append({"id": b.id, "kind": p.kind, "text": p.text, "pos": c - Vector2(0, 26 + b.size * 14),
+				"count": 1, "tile": Vector2i(b.x, b.y)})
+		if view.cam.zoom.x >= 0.6:
+			_set_items(raw)
+			return
+		var groups := {}
+		for it in raw:
+			var key := Vector2i(it.tile.x / 6, it.tile.y / 6)
+			if not groups.has(key):
+				var g: Dictionary = it.duplicate()
+				g.count = 0
+				g.sum = Vector2.ZERO
+				groups[key] = g
+			var g: Dictionary = groups[key]
+			g.count += 1
+			g.sum += it.pos
+			if Game.PROBLEM_ORDER.find(it.kind) < Game.PROBLEM_ORDER.find(g.kind):
+				g.kind = it.kind
+				g.text = it.text
+				g.id = it.id
+				g.tile = it.tile
+		var out := []
+		for g in groups.values():
+			g.pos = g.sum / g.count
+			out.append(g)
+		_set_items(out)
+
+	func _set_items(list: Array) -> void:
+		var parts := PackedStringArray()
+		for it in list:
+			parts.append("%d%s%d" % [it.id, it.kind, it.count])
+		var ns := ",".join(parts)
+		items = list
+		if ns != sig:
+			sig = ns
+			queue_redraw()
+
+	## 世界座標下點中的紙籤；無則回傳空字典。
+	func hit(p: Vector2) -> Dictionary:
+		for k in range(hits.size() - 1, -1, -1):
+			if hits[k][0].has_point(p):
+				return hits[k][1]
+		return {}
+
+	func _draw() -> void:
+		hits.clear()
+		if items.is_empty():
+			return
+		var s := 1.0 / maxf(view.cam.zoom.x, 0.2)
+		var mouse := get_global_mouse_position()
+		var hover := {}
+		var tf := UIArt.font("title")
+		for it in items:
+			var red: bool = it.kind in RED
+			var p: Vector2 = it.pos
+			var w := 26.0 * s
+			var hh := 30.0 * s
+			var r := Rect2(p - Vector2(w * 0.5, hh), Vector2(w, hh))
+			draw_line(p, it.pos + Vector2(0, 14.0 * s), Color(UIArt.INK, 0.55), 1.2 * s)
+			UIArt.slip(self, r, Color("f2d6c8") if red else UIArt.PAPER, 2.0 * s)
+			draw_rect(r, Color(UIArt.BAD if red else UIArt.INK_2, 0.9), false, 1.2 * s)
+			draw_circle(r.position + Vector2(w * 0.5, 3.5 * s), 1.6 * s, Color(UIArt.INK, 0.6))
+			UIArt.icon(self, ICON.get(it.kind, "bad"), Rect2(r.position + Vector2(3.0 * s, 6.0 * s), Vector2(20.0 * s, 20.0 * s)),
+				UIArt.BAD if red else UIArt.INK)
+			if it.count > 1:
+				var cc := r.position + Vector2(w, 0)
+				draw_circle(cc, 9.0 * s, UIArt.ZHU)
+				UIArt.text_c(self, tf, cc, str(it.count), int(12 * s), UIArt.SEAL_TEXT)
+			var hr := r.grow(4.0 * s)
+			hits.append([hr, it])
+			if hr.has_point(mouse):
+				hover = {"r": r, "it": it}
+		if not hover.is_empty():
+			var r: Rect2 = hover.r
+			var it: Dictionary = hover.it
+			var txt: String = it.text if it.count <= 1 else "%s等 %d 處" % [it.text, it.count]
+			var bf := UIArt.font("body")
+			var fs := int(15 * s)
+			var tw := bf.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+			var lr := Rect2(r.end.x + 4.0 * s, r.position.y + 4.0 * s, tw + 14.0 * s, 22.0 * s)
+			UIArt.slip(self, lr, UIArt.PAPER, 2.0 * s)
+			UIArt.text_l(self, bf, lr.position.x + 7.0 * s, lr.get_center().y, txt, fs, UIArt.BAD if it.kind in RED else UIArt.INK)

@@ -551,7 +551,7 @@ func run() -> void:
 	await cam_to(Vector2(ox + 4, oy - 2), 1.8, 3.0)
 	await wait(3.0)
 	await cam_to(Vector2(ox + 5, oy + 2), 0.45, 5.0)
-	ui.banner("上河築城 · 一局實錄")
+	ui.banner("水村山郭 · 一局實錄")
 	await wait(5.0)
 	print("AUTOPLAY DONE t=%.1f pop=%d rank=%s money=%d routes=%d" % [elapsed(), Game.stats.pop, Game.rank_name(), Game.money, Game.routes.size()])
 	get_tree().quit()

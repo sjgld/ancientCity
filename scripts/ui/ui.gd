@@ -66,6 +66,11 @@ var quest_now: Label
 var quest_reward: RichTextLabel
 var quest_next: Label
 var quest_count: Label
+var quest_bar: InkBar
+var quest_seal: QuestSeal
+var quest_hold := 0.0
+var banner_free_at := 0.0
+var info_pic: BuildingPic
 var minimap: MiniMap
 var mini_panel: PanelContainer
 var hover_tip: PanelContainer
@@ -74,6 +79,7 @@ var chart: Chart
 var music_on := true
 var menu_panel: PanelContainer
 var music_btn: MenuRow
+var scale_btn: MenuRow
 var dock_btns := {}
 
 
@@ -86,9 +92,6 @@ func _ready() -> void:
 	root.theme = _make_theme()
 	add_child(root)
 	_build_icon_atlas()
-	root.resized.connect(func():
-		_fit_book()
-		_place_log())
 	_build_log()
 	_build_quests()
 	_build_minimap()
@@ -102,7 +105,7 @@ func _ready() -> void:
 	Game.message.connect(_on_message)
 	Game.rank_changed.connect(_on_rank)
 	Game.month_passed.connect(func(): main.world.overlay.queue_redraw())
-	Game.quest_done.connect(func(_id): Sfx.play("coin"))
+	Game.quest_done.connect(_on_quest_done)
 	Game.combo_found.connect(_on_combo)
 
 
@@ -339,18 +342,22 @@ func _build_menu() -> void:
 	var items := [["存檔", "F5", _save], ["讀檔", "F9", func():
 		if not main.load_saved():
 			toast("讀檔失敗", true)], ["配樂", "", _toggle_music], ["須知", "", func(): open_window("help")],
-		["返回開場", "", func(): show_title(true)]]
+		["介面大小", "", _cycle_scale], ["返回開場", "", func(): show_title(true)]]
 	for it in items:
 		var b := MenuRow.new()
 		b.label = it[0]
 		b.key = it[1]
 		b.pressed.connect(func():
 			Sfx.play("click")
-			menu_panel.visible = false
+			# 調整介面大小時選單留著，方便連按比較
+			if it[0] != "介面大小":
+				menu_panel.visible = false
 			it[2].call())
 		v.add_child(b)
 		if it[0] == "配樂":
 			music_btn = b
+		if it[0] == "介面大小":
+			scale_btn = b
 	menu_panel.visible = false
 
 
@@ -361,6 +368,15 @@ func _toggle_menu() -> void:
 	if music_btn:
 		music_btn.key = "開" if music_on else "關"
 		music_btn.queue_redraw()
+	if scale_btn:
+		scale_btn.key = main.ui_scale_label()
+		scale_btn.queue_redraw()
+
+
+func _cycle_scale() -> void:
+	main.cycle_ui_scale()
+	scale_btn.key = main.ui_scale_label()
+	scale_btn.queue_redraw()
 
 
 func _toggle_music() -> void:
@@ -638,6 +654,8 @@ func _build_info() -> void:
 	cb.add_theme_color_override("font_hover_color", INK)
 	cb.add_theme_font_size_override("font_size", 14)
 	h.add_child(cb)
+	info_pic = BuildingPic.new()
+	v.add_child(info_pic)
 	info_stats = StatTiles.new()
 	v.add_child(info_stats)
 	info_body = RichTextLabel.new()
@@ -649,6 +667,7 @@ func _build_info() -> void:
 	info_body.add_theme_font_size_override("bold_font_size", 17)
 	info_body.add_theme_constant_override("line_separation", 7)
 	info_body.add_theme_constant_override("line_separation", 4)
+	info_body.meta_clicked.connect(_on_info_meta)
 	v.add_child(info_body)
 	info_btns = HBoxContainer.new()
 	info_btns.add_theme_constant_override("separation", 10)
@@ -656,9 +675,39 @@ func _build_info() -> void:
 	info_panel.visible = false
 
 
+## 冊頁「還缺」清單中的〔去建〕：直接拿起對應工具。
+func _on_info_meta(meta: Variant) -> void:
+	var id := str(meta)
+	var cat := ""
+	var rank_need := 0
+	var nm := ""
+	if id.begins_with("b:"):
+		var d: Dictionary = Defs.B.get(id.substr(2), {})
+		if d.is_empty():
+			return
+		cat = d.cat
+		rank_need = d.rank
+		nm = d.name
+	elif id.begins_with("zone_"):
+		cat = "zone"
+		nm = Defs.ZONE_NAMES[int(id.substr(5))]
+	else:
+		return
+	if rank_need > Game.rank:
+		toast("%s需晉為「%s」方可建造" % [nm, Defs.RANKS[rank_need]["name"]], true)
+		return
+	Sfx.play("click")
+	if cur_cat != cat:
+		_on_cat(cat)
+	main.set_tool(id)
+	_fill_palette()
+	toast("選定地點以%s%s" % ["劃設" if id.begins_with("zone_") else "建造", nm])
+
+
 func show_info() -> void:
 	for c in info_btns.get_children():
 		c.queue_free()
+	info_pic.visible = false
 	var vid: int = main.selected_vehicle
 	if vid >= 0 and Game.vehicles.has(vid):
 		var v: Dictionary = Game.vehicles[vid]
@@ -678,6 +727,7 @@ func show_info() -> void:
 		var b: Dictionary = Game.buildings[sel]
 		info_panel.visible = true
 		info_title.text = Game.bname(b)
+		info_pic.show_building(b)
 		if b.type == "yamen":
 			info_title.text = "%s%s" % [Game.city_name, ["里署", "鎮署", "縣衙", "州衙", "府衙", "皇城"][Game.rank]]
 		_set_info(_yamen_text() if b.type == "yamen" else Game.building_info(b))
@@ -763,6 +813,7 @@ func _yamen_text() -> String:
 
 func _build_log() -> void:
 	log_panel = LogStrip.new()
+	log_panel.ui = self
 	log_panel.anchor_top = 1.0
 	log_panel.anchor_bottom = 1.0
 	log_panel.offset_left = 14
@@ -787,7 +838,7 @@ func _on_message(_text: String, kind: int) -> void:
 		Sfx.play("bad")
 	var lines := []
 	for l in Game.log_lines:
-		lines.append({"date": _short_date(l.t), "text": l.text, "kind": l.kind})
+		lines.append({"date": _short_date(l.t), "text": l.text, "kind": l.kind, "at": l.get("at", Game.NO_CELL)})
 		if lines.size() >= 3:
 			break
 	log_panel.lines = lines
@@ -834,9 +885,16 @@ func banner(text: String) -> void:
 	root.add_child(b)
 	b.reset_size()
 	b.position = Vector2((root.size.x - b.size.x) * 0.5, root.size.y * 0.3)
+	# 同時有數則大事時依序出場，不疊在一起
+	var now := Time.get_ticks_msec() / 1000.0
+	var delay := maxf(0.0, banner_free_at - now)
+	banner_free_at = now + delay + 3.3
+	b.modulate.a = 0.0
 	var tw := create_tween()
-	tw.tween_interval(2.5)
-	tw.tween_property(b, "modulate:a", 0.0, 1.0)
+	tw.tween_interval(delay)
+	tw.tween_property(b, "modulate:a", 1.0, 0.2)
+	tw.tween_interval(2.3)
+	tw.tween_property(b, "modulate:a", 0.0, 0.8)
 	tw.tween_callback(b.queue_free)
 
 
@@ -846,6 +904,8 @@ func typing() -> bool:
 
 
 func _process(delta: float) -> void:
+	if quest_hold > 0.0:
+		quest_hold -= delta
 	if toast_t > 0:
 		toast_t -= delta
 		if toast_t <= 0:
@@ -866,6 +926,7 @@ func _process(delta: float) -> void:
 			if sel >= 0 and Game.buildings.has(sel):
 				var b: Dictionary = Game.buildings[sel]
 				_set_info(_yamen_text() if b.type == "yamen" else Game.building_info(b))
+				info_pic.show_building(b)
 			elif sel >= 0:
 				main.selected = -1
 				show_info()
@@ -964,16 +1025,6 @@ func _show_page(id: String) -> void:
 		if w[0] == id:
 			book_title.text = w[1]
 	_fill_window(id, true)
-	_fit_book()
-
-
-## 案牘依畫面大小定內頁高度並置中；畫面改變大小時重算。
-func _fit_book() -> void:
-	if not book.visible:
-		return
-	var h := clampf(root.size.y - 300.0, 320.0, 560.0)
-	for k in windows:
-		windows[k].custom_minimum_size = Vector2(840, h)
 	book.reset_size()
 	book.position = Vector2(maxf(40, (root.size.x - book.size.x) * 0.5 - 30), maxf(TOP_H + 16, (root.size.y - book.size.y) * 0.5))
 	book_marks.position = Vector2(book.position.x + book.size.x + 2, book.position.y + 44)
@@ -1258,7 +1309,7 @@ func _build_title() -> void:
 	v.add_theme_constant_override("separation", 14)
 	v.alignment = BoxContainer.ALIGNMENT_CENTER
 	p.add_child(v)
-	var t := _label("上河築城", 76, INK, "title")
+	var t := _label("水村山郭", 76, INK, "title")
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(t)
 	var st := _label("一河兩岸　百業千家", 22, UIArt.INK_2)
@@ -1364,6 +1415,10 @@ func _build_quests() -> void:
 	quest_now.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	quest_now.custom_minimum_size = Vector2(248, 0)
 	v.add_child(quest_now)
+	quest_bar = InkBar.new()
+	v.add_child(quest_bar)
+	quest_seal = QuestSeal.new()
+	root.add_child(quest_seal)
 	quest_reward = RichTextLabel.new()
 	quest_reward.bbcode_enabled = true
 	quest_reward.fit_content = true
@@ -1379,8 +1434,19 @@ func _build_quests() -> void:
 	v.add_child(quest_next)
 
 
+func _on_quest_done(_id: String) -> void:
+	Sfx.play("coin")
+	if main.title_mode or not quest_panel.visible:
+		return
+	quest_hold = 1.8
+	quest_bar.value = 1.0
+	quest_bar.queue_redraw()
+	quest_seal.position = quest_panel.position + Vector2(quest_panel.size.x - 74, 6)
+	quest_seal.play()
+
+
 func _update_quests() -> void:
-	if main.title_mode:
+	if main.title_mode or quest_hold > 0.0:
 		return
 	var qs := Game.current_quests(3)
 	if qs.is_empty():
@@ -1389,6 +1455,12 @@ func _update_quests() -> void:
 	quest_panel.visible = true
 	quest_count.text = "第%s道，共%s道" % [Defs.cn_num(Game.quests_done.size() + 1), Defs.cn_num(Defs.QUESTS.size())]
 	quest_now.text = qs[0].text
+	var pr: Array = Game.quest_progress(qs[0].id)
+	quest_bar.visible = not pr.is_empty()
+	if not pr.is_empty():
+		quest_bar.value = clampf(float(pr[0]) / maxf(pr[1], 1.0), 0.0, 1.0)
+		quest_bar.text = "%s／%s" % [_fmt(mini(pr[0], pr[1])), _fmt(pr[1])]
+		quest_bar.queue_redraw()
 	set_rich(quest_reward, ("{i:silver} 賞銀 [n]%s[/n] 兩" % _fmt(qs[0].reward)) if qs[0].reward > 0 else "", 20, 17)
 	quest_reward.visible = qs[0].reward > 0
 	var rest := []
@@ -1445,6 +1517,101 @@ func set_hover(text: String, at: Vector2) -> void:
 	if p.y + hover_tip.size.y > root.size.y - BOTTOM_H:
 		p.y = at.y - hover_tip.size.y - 8
 	hover_tip.position = p
+
+
+## 詔令進度條：墨框、泥金填色，右側寫「目前／目標」。
+class InkBar extends Control:
+	var value := 0.0
+	var text := ""
+
+	func _init() -> void:
+		custom_minimum_size = Vector2(248, 18)
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	func _draw() -> void:
+		var nf := UIArt.font("num")
+		var tw := nf.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+		var r := Rect2(0, 6, size.x - tw - 10, 7)
+		draw_rect(r, Color(UIArt.INK, 0.08))
+		draw_rect(Rect2(r.position, Vector2(r.size.x * value, r.size.y)), UIArt.NIJIN if value < 1.0 else UIArt.GOOD)
+		draw_rect(r, Color(UIArt.INK, 0.45), false, 1.0)
+		UIArt.text_l(self, nf, r.end.x + 8, r.get_center().y, text, 13, Color("6b5226"))
+
+
+## 詔令達成時蓋下的朱印「准」：由大落小、略帶旋轉，停留後淡去。
+class QuestSeal extends Control:
+	var t := -1.0
+
+	func _init() -> void:
+		size = Vector2(64, 64)
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		visible = false
+
+	func play() -> void:
+		t = 0.0
+		visible = true
+		move_to_front()
+
+	func _process(delta: float) -> void:
+		if t < 0.0:
+			return
+		t += delta
+		if t > 2.0:
+			t = -1.0
+			visible = false
+		queue_redraw()
+
+	func _draw() -> void:
+		if t < 0.0:
+			return
+		var k := clampf(t / 0.18, 0.0, 1.0)
+		var sc := lerpf(2.2, 1.0, k * k)
+		var a := 1.0 if t < 1.5 else clampf(1.0 - (t - 1.5) / 0.5, 0.0, 1.0)
+		modulate.a = a * lerpf(0.3, 1.0, k)
+		var r := Rect2(size * 0.5 - Vector2(26, 26) * sc, Vector2(52, 52) * sc)
+		UIArt.seal(self, r, "准", -0.12)
+
+
+## 冊頁頂端的建築小景：以地圖同一套畫法繪出選中的建築。
+class BuildingPic extends Control:
+	var type := ""
+	var level := 1
+	var v := 0
+	var size_t := 1
+
+	func _init() -> void:
+		custom_minimum_size = Vector2(330, 112)
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		clip_contents = true
+		visible = false
+
+	func show_building(b: Dictionary) -> void:
+		var nv: int = Game.tree_var[Game.idx(b.x, b.y)]
+		if not visible or type != b.type or level != b.level or v != nv:
+			type = b.type
+			level = b.level
+			v = nv
+			size_t = b.size
+			queue_redraw()
+		visible = true
+
+	func _draw() -> void:
+		var r := Rect2(Vector2.ZERO, size)
+		draw_rect(r, Color("dfe3d3"))
+		var sc := 1.35 if size_t == 1 else 0.78
+		var c := Vector2(size.x * 0.5, size.y * 0.5 + (22.0 if size_t == 1 else 16.0))
+		draw_set_transform(c, 0.0, Vector2(sc, sc))
+		var e := 0.5 * size_t + 0.15
+		draw_colored_polygon(PackedVector2Array([Art.iso(-e, -e), Art.iso(e, -e), Art.iso(e, e), Art.iso(-e, e)]), Color("c9cdb8"))
+		if type == "farm":
+			var f := 0.47
+			draw_colored_polygon(PackedVector2Array([Art.iso(-f, -f), Art.iso(f, -f), Art.iso(f, f), Art.iso(-f, f)]), Color("b9a865"))
+			for k in 7:
+				var tt := -0.4 + k * 0.133
+				draw_line(Art.iso(-0.44, tt), Art.iso(0.44, tt), Color("d2c27e"), 1.6)
+		Art.building(self, type, Vector2.ZERO, level, v)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		draw_rect(r, Color(UIArt.INK, 0.25), false, 1.0)
 
 
 # ───────────────────────── 天頭元件 ─────────────────────────
@@ -1971,15 +2138,50 @@ class BookMark extends Button:
 class LogStrip extends Control:
 	var lines: Array = []
 	var age := 0.0
+	var ui
+	var line_rects: Array = []
 
 	func _init() -> void:
-		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		mouse_filter = Control.MOUSE_FILTER_STOP
+
+	## 只有帶地點、且尚未淡去的那幾行可點，其餘讓滑鼠穿過去操作地圖。
+	func _has_point(p: Vector2) -> bool:
+		if age >= 40.0:
+			return false
+		for k in line_rects.size():
+			if line_rects[k].has_point(p) and lines[k].at != Game.NO_CELL:
+				return true
+		return false
+
+	func _gui_input(ev: InputEvent) -> void:
+		var mb := ev as InputEventMouseButton
+		if mb == null or not mb.pressed or mb.button_index != MOUSE_BUTTON_LEFT:
+			return
+		for k in line_rects.size():
+			if line_rects[k].has_point(mb.position) and lines[k].at != Game.NO_CELL:
+				var at: Vector2i = lines[k].at
+				ui.main.focus_tile(at)
+				var b: Dictionary = Game.building_at(at.x, at.y)
+				ui.main.selected = b.id if not b.is_empty() else -1
+				ui.main.selected_vehicle = -1
+				ui.main.selected_tile = at if b.is_empty() else Vector2i(-1, -1)
+				ui.show_info()
+				Sfx.play("click")
+				age = 0.0
+				accept_event()
+				return
 
 	func _process(delta: float) -> void:
 		var a0 := age
 		age += delta
 		if a0 < 40.0 and age >= 25.0:
 			queue_redraw()
+		var mp := get_local_mouse_position()
+		var hand := false
+		for k in line_rects.size():
+			if line_rects[k] is Rect2 and line_rects[k].has_point(mp) and lines[k].at != Game.NO_CELL:
+				hand = true
+		mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND if hand else Control.CURSOR_ARROW
 
 	func _draw() -> void:
 		if lines.is_empty():
@@ -1995,6 +2197,8 @@ class LogStrip extends Control:
 		var nf := UIArt.font("num")
 		UIArt.text_l(self, UIArt.font("title"), 12, r.position.y + 14, "邸　報", 12, UIArt.INK_3)
 		var y := r.end.y - 16.0
+		line_rects.clear()
+		line_rects.resize(lines.size())
 		for i in lines.size():
 			var l: Dictionary = lines[i]
 			var a: float = [1.0, 0.7, 0.5][i]
@@ -2007,7 +2211,12 @@ class LogStrip extends Control:
 				col = UIArt.BAD
 			UIArt.icon(self, ic, Rect2(12, y - 8, 16, 16))
 			UIArt.text_l(self, nf, 34, y, l.date, 12, Color(UIArt.INK_3, a))
-			_rich_line(76, y, l.text, Color(col, a), size.x - 12)
+			var right := size.x - 12
+			if l.at != Game.NO_CELL:
+				right -= 22
+				UIArt.icon(self, "locate", Rect2(size.x - 30, y - 8, 16, 16), Color(UIArt.SHIQING, a))
+			_rich_line(76, y, l.text, Color(col, a), right)
+			line_rects[i] = Rect2(0, y - 12.5, size.x, 25)
 			y -= 25.0
 
 
@@ -2065,8 +2274,7 @@ class ComboArt extends Control:
 				var band := PackedVector2Array([Art.iso(-1.5, -1.5), Art.iso(1.5, -1.5), Art.iso(1.5, 1.5), Art.iso(-1.5, 1.5)])
 				draw_colored_polygon(band, water)
 				Art.building(self, "shop", Art.iso(-2.1, -0.6), 1, 3)
-				for k in 3:
-					Art.rainbow_bridge(self, Art.iso(k - 1, 0), true, k, 3, 1)
+				Art.rainbow_bridge(self, Art.iso(1, 0), true, 3, 1)
 				Art.building(self, "shop", Art.iso(2.1, 0.6), 1, 4)
 			"wazi":
 				Art.building(self, "shop", Art.iso(-1.0, 0.1), 2, 2)
