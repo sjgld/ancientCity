@@ -2,7 +2,7 @@ extends Node
 ## 自動遊玩：以真實的工具操作（拖路、劃區、建屋、開路線）玩一局，供錄製示範影片。
 ## 啟動：Godot --path . --write-movie out.avi --fixed-fps 30 -- --autoplay
 
-const WorldView = preload("res://scripts/world_view.gd")
+const WorldView = preload("res://scripts/view/world_view.gd")
 const FPS := 30.0
 const LENGTH := 260.0  # 影片長度（秒）
 

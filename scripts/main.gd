@@ -1,9 +1,9 @@
 extends Node2D
 ## 主場景：攝影機、滑鼠工具、游標預覽，並把介面與世界接起來。
 
-const Art = preload("res://scripts/art.gd")
-const WorldView = preload("res://scripts/world_view.gd")
-const UI = preload("res://scripts/ui.gd")
+const Art = preload("res://scripts/view/art.gd")
+const WorldView = preload("res://scripts/view/world_view.gd")
+const UI = preload("res://scripts/ui/ui.gd")
 
 var cam: Camera2D
 var world: Node2D
@@ -51,7 +51,7 @@ func _ready() -> void:
 	Game.speed = 0
 	ui.show_title(true)
 	if "--autoplay" in OS.get_cmdline_user_args():
-		var bot = load("res://scripts/autoplay.gd").new()
+		var bot = load("res://scripts/tools/autoplay.gd").new()
 		bot.main = self
 		add_child(bot)
 		bot.run()

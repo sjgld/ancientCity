@@ -238,7 +238,7 @@ class Box extends StyleBox:
 	var seed_v := 0
 
 	func _draw(ci: RID, r: Rect2) -> void:
-		var UA = load("res://scripts/ui_art.gd")
+		var UA = load("res://scripts/ui/ui_art.gd")
 		match kind:
 			"paper":
 				UA.paper_rid(ci, r, bg, shadow, deckle, seed_v)

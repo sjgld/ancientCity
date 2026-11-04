@@ -9,7 +9,7 @@ signal quest_done(id: String)
 signal combo_found(id: String)
 signal building_fx(id: int, kind: String)   # placed／built／upgrade／combo，供畫面播放動畫
 
-const WorldGen = preload("res://scripts/worldgen.gd")
+const WorldGen = preload("res://scripts/sim/worldgen.gd")
 const DIRS: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
 const COVER_KEYS := ["water", "security", "health", "fire", "edu", "faith", "fun", "beauty", "pollution", "market"]
 const SPEEDS := [0, 1, 2, 4]

@@ -1,9 +1,9 @@
 extends Node2D
 ## 世界畫面：地面分塊、按對角線排序之物件層、車船行人、煙火天氣與資料圖層。
 
-const Art = preload("res://scripts/art.gd")
-const Batch = preload("res://scripts/batch.gd")
-const UIArt = preload("res://scripts/ui_art.gd")
+const Art = preload("res://scripts/view/art.gd")
+const Batch = preload("res://scripts/view/batch.gd")
+const UIArt = preload("res://scripts/ui/ui_art.gd")
 const CH := 10
 const SEG := 16
 const ROLE_NEAR := {

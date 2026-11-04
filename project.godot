@@ -11,9 +11,9 @@ config/features=PackedStringArray("4.6")
 
 [autoload]
 
-Defs="*res://scripts/defs.gd"
-Game="*res://scripts/game.gd"
-Sfx="*res://scripts/audio.gd"
+Defs="*res://scripts/sim/defs.gd"
+Game="*res://scripts/sim/game.gd"
+Sfx="*res://scripts/audio/audio.gd"
 
 [display]
 

@@ -1,8 +1,8 @@
 extends CanvasLayer
 ## 介面：常駐的天頭、地頭為深色漆木；冊頁、提示、詔令、邸報、案牘為宣紙。
 
-const UIArt = preload("res://scripts/ui_art.gd")
-const Art = preload("res://scripts/art.gd")
+const UIArt = preload("res://scripts/ui/ui_art.gd")
+const Art = preload("res://scripts/view/art.gd")
 
 const TOP_H := 50.0
 const BOTTOM_H := 66.0
