@@ -14,7 +14,7 @@ const PAPER_2 := Color("e2d6bc")
 const HUANG := Color("e2cd96")
 const INK := Color("29241f")
 const INK_2 := Color("5d5147")
-const INK_3 := Color("8b7d6e")
+const INK_3 := Color("6e6152")   # 次要文字：在宣紙上對比約 4.7:1，小字也讀得清
 # 語意色：紙上與木上各一組
 const GOOD := Color("3f7a57")
 const GOOD_W := Color("8cc29b")
@@ -345,8 +345,42 @@ static func _pl(ci: CanvasItem, pts: Array, col: Color, w: float = 1.4) -> void:
 	ci.draw_polyline(PackedVector2Array(pts), col, w, true)
 
 
-## 在 r 中畫一枚圖示（以 24 格為準）。line 為墨線色：紙上用墨，木上用象牙白。
+## 十種貨物圖示：《天工開物》式白描加淡彩，48 格線稿（設計稿見畫法方案）。執行時依需要的大小點陣化並快取。
+const CARGO_SVG := {
+	"c_grain": '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"><path d="M9 23 Q24 8 39 23 Z" fill="#e7c766" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M10 23 L38 23 L34 41 L14 41 Z" fill="#b4895a" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M12 32 L36 32" fill="none" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M31 22 Q33 12 40 5" fill="none" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M34 13 l3.5 -2.5 M36 9.5 l3.5 -2 M33 16.5 l3.5 -1.5" fill="none" stroke="#2a221c" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/></svg>',
+	"c_fish": '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"><path d="M13 4 L13 19" fill="none" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><circle cx="13" cy="4" r="1.8" fill="none" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M5 25 Q15 13 29 21 L41 13 L38 25 L41 37 L29 29 Q15 37 5 25 Z" fill="#9fbcc6" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M13 19 Q16 25 13 31" fill="none" stroke="#2a221c" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/><path d="M20 22 q2 3 0 6 M25 21.5 q2 3.5 0 7" fill="none" stroke="#2a221c" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="9.5" cy="23.5" r="1.6" fill="#2a221c" stroke="none" stroke-width="0" stroke-linejoin="round" stroke-linecap="round"/></svg>',
+	"c_wood": '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"><circle cx="15" cy="32" r="9" fill="#c79a66" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><circle cx="33" cy="32" r="9" fill="#c79a66" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><circle cx="24" cy="17" r="9" fill="#d1a674" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><circle cx="15" cy="32" r="5" fill="none" stroke="#2a221c" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/><circle cx="33" cy="32" r="5" fill="none" stroke="#2a221c" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/><circle cx="24" cy="17" r="5" fill="none" stroke="#2a221c" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/><circle cx="15" cy="32" r="1.4" fill="#2a221c" stroke="none" stroke-width="0" stroke-linejoin="round" stroke-linecap="round"/><circle cx="33" cy="32" r="1.4" fill="#2a221c" stroke="none" stroke-width="0" stroke-linejoin="round" stroke-linecap="round"/><circle cx="24" cy="17" r="1.4" fill="#2a221c" stroke="none" stroke-width="0" stroke-linejoin="round" stroke-linecap="round"/><path d="M5 26 Q24 31 43 26" fill="none" stroke="#2a221c" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/></svg>',
+	"c_stone": '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"><path d="M7 19 L17 11 L41 11 L31 19 Z" fill="#d3cfc6" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M7 19 L31 19 L31 39 L7 39 Z" fill="#aaa69d" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M31 19 L41 11 L41 31 L31 39 Z" fill="#8d8981" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M11 24 l4 3 M19 29 l4 3 M11 33 l4 3 M23 23 l3 3 M34 22 l3 -2 M34 29 l3 -2" fill="none" stroke="#2a221c" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/></svg>',
+	"c_iron": '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"><path d="M5 40 L43 40 L39 31 L9 31 Z" fill="#5f646c" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M9 31 L39 31 L36 27 L12 27 Z" fill="#8a9099" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M13 27 L35 27 L32 19 L16 19 Z" fill="#646a73" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M16 19 L32 19 L30 15 L18 15 Z" fill="#9097a0" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M14 35 L32 35 M18 23 L28 23" fill="none" stroke="#2a221c" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/></svg>',
+	"c_silk": '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"><path d="M35 31 Q44 35 40 44" fill="none" stroke="#2a221c" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/><path d="M12 15 L36 15 L36 33 L12 33 Z" fill="#f6efdb" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M12 19.5 L36 19.5 M12 24 L36 24 M12 28.5 L36 28.5" fill="none" stroke="#2a221c" stroke-width="0.9" stroke-linejoin="round" stroke-linecap="round"/><ellipse cx="11" cy="24" rx="4" ry="13" fill="#b4895a" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><ellipse cx="37" cy="24" rx="4" ry="13" fill="#c49866" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><circle cx="37" cy="24" r="1.4" fill="#2a221c" stroke="none" stroke-width="0" stroke-linejoin="round" stroke-linecap="round"/></svg>',
+	"c_tea": '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"><circle cx="21" cy="29" r="15" fill="#8b6e43" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><circle cx="21" cy="29" r="10.5" fill="none" stroke="#2a221c" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/><path d="M14 29 q3.5 -5 7 0 q3.5 5 7 0" fill="none" stroke="#2a221c" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/><path d="M34 15 C37 7 43 5 45 4 C45 11 41 16 34 15 Z" fill="#7fae5c" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M34 15 C30 9 31 5 33 2 C37 7 37 12 34 15 Z" fill="#93bf6c" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg>',
+	"c_ware": '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"><path d="M13 15 Q24 1 35 15" fill="none" stroke="#2a221c" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/><path d="M11 15 L37 15 L33 41 L15 41 Z" fill="#b47f4c" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><ellipse cx="24" cy="15" rx="13" ry="3.6" fill="#c99764" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M20 18.5 L19.2 40 M28 18.5 L28.8 40" fill="none" stroke="#2a221c" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/><path d="M12 22 L36 22 M14 35 L34 35" fill="none" stroke="#2a221c" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/></svg>',
+	"c_cloth": '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"><path d="M5 31 L33 31 L43 25 L15 25 Z" fill="#c0584a" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M5 31 L33 31 L33 39 L5 39 Z" fill="#a8443a" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M33 31 L43 25 L43 33 L33 39 Z" fill="#8f372e" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M8 21 L32 21 L40 16 L16 16 Z" fill="#cf6a52" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M8 21 L32 21 L32 27 L8 27 Z" fill="#b8503f" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M32 21 L40 16 L40 22 L32 27 Z" fill="#983b30" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><circle cx="12" cy="35" r="1.3" fill="#e3bd5a" stroke="none" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><circle cx="20" cy="35" r="1.3" fill="#e3bd5a" stroke="none" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><circle cx="28" cy="35" r="1.3" fill="#e3bd5a" stroke="none" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><circle cx="15" cy="24" r="1.2" fill="#e3bd5a" stroke="none" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><circle cx="23" cy="24" r="1.2" fill="#e3bd5a" stroke="none" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg>',
+	"c_porcelain": '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"><path d="M33 24 Q40 20 43 11" fill="none" stroke="#2a221c" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/><path d="M16 21 C7 21 7 33 15 34" fill="none" stroke="#2a221c" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/><path d="M17 17 C9 23 9 37 17 41 L31 41 C39 37 39 23 31 17 Z" fill="#a9c9b4" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M19 17 L19 9 L29 9 L29 17 Z" fill="#b9d5c2" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><circle cx="24" cy="7" r="2" fill="#a9c9b4" stroke="#2a221c" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/><path d="M15 26 Q14 31 16 35" fill="none" stroke="#ffffff" stroke-opacity="0.7" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/></svg>',
+}
+
+
+## 貨物圖示點陣化：依顯示大小取兩倍、以十六為級距，同一級共用一張。
+static func _svg_tex(kind: String, px: int) -> Texture2D:
+	var key := "%s@%d" % [kind, px]
+	if _tex.has(key):
+		return _tex[key]
+	var img := Image.new()
+	if img.load_svg_from_string(CARGO_SVG[kind], px / 48.0) != OK:
+		return null
+	var t := ImageTexture.create_from_image(img)
+	_tex[key] = t
+	return t
+
+
+## 在 r 中畫一枚圖示（以 24 格為準）。line 為墨線色：紙上用墨，木上用象牙白。貨物圖示自帶顏色，不受 line 影響。
 static func icon(ci: CanvasItem, kind: String, r: Rect2, line: Color = INK) -> void:
+	if CARGO_SVG.has(kind):
+		var px := clampi(ceili(r.size.x * 2.0 / 16.0) * 16, 32, 128)
+		var t := _svg_tex(kind, px)
+		if t != null:
+			ci.draw_texture_rect(t, r, false)
+		return
 	var s := r.size.x / 24.0
 	ci.draw_set_transform(r.position, 0.0, Vector2(s, s))
 	match kind:
@@ -554,6 +588,16 @@ static func tool_thumb(ci: CanvasItem, id: String, c: Vector2, s: float) -> void
 				ci.draw_rect(Rect2(p + Vector2(2 + k * 8, -20) * s, Vector2(4, 4) * s), Color("7a756e"))
 		"bulldoze":
 			seal_outline(ci, Rect2(c - Vector2(15, 15), Vector2(30, 30)), "拆")
+		"fill":
+			# 一半是水、一半填成土，中間一道土堆
+			var top := c + Vector2(0, -16) * s
+			var rt := c + Vector2(32, 0) * s
+			var bt := c + Vector2(0, 16) * s
+			var lf := c + Vector2(-32, 0) * s
+			ci.draw_colored_polygon(PackedVector2Array([top, rt, (rt + bt) * 0.5, (top + lf) * 0.5]), Color("7fa1a6"))
+			ci.draw_colored_polygon(PackedVector2Array([(top + lf) * 0.5, (rt + bt) * 0.5, bt, lf]), Color("b99a6c"))
+			ci.draw_line((top + lf) * 0.5, (rt + bt) * 0.5, Color("8a6e48"), 2.0)
+			ci.draw_polyline(PackedVector2Array([top, rt, bt, lf, top]), Color("6f6a62"), 1.2, true)
 		"route":
 			var a := c + Vector2(-22, 6) * s
 			var b := c + Vector2(22, -6) * s

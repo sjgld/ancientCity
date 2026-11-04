@@ -5,14 +5,28 @@ var verts := PackedVector2Array()
 var cols := PackedColorArray()
 var texts: Array = []
 var off := Vector2.ZERO
+var xf := Transform2D.IDENTITY
+var plain := true   # 只有平移時走快路
 
 
-func draw_set_transform(p: Vector2, _rot: float = 0.0, _scale: Vector2 = Vector2.ONE) -> void:
+## 支援平移、旋轉、縮放（行人翻面、傾身要用）。
+func draw_set_transform(p: Vector2, rot: float = 0.0, sc: Vector2 = Vector2.ONE) -> void:
 	off = p
+	plain = rot == 0.0 and sc == Vector2.ONE
+	xf = Transform2D(rot, sc, 0.0, p)
+
+
+func _t(p: Vector2) -> Vector2:
+	return p + off if plain else xf * p
 
 
 func _quad(a: Vector2, b: Vector2, c: Vector2, d: Vector2, col: Color) -> void:
-	verts.append_array([a + off, b + off, c + off, a + off, c + off, d + off])
+	if plain:
+		verts.append_array([a + off, b + off, c + off, a + off, c + off, d + off])
+	else:
+		var ta := xf * a
+		var tc := xf * c
+		verts.append_array([ta, xf * b, tc, ta, tc, xf * d])
 	for k in 6:
 		cols.append(col)
 
@@ -35,7 +49,7 @@ func draw_polygon(pts: PackedVector2Array, pcols: PackedColorArray, _uvs = null,
 		idx = Geometry2D.triangulate_polygon(pts)
 	var uni := pcols.size() < pts.size()
 	for i in idx:
-		verts.append(pts[i] + off)
+		verts.append(pts[i] + off if plain else xf * pts[i])
 		cols.append(pcols[0] if uni else pcols[i])
 
 
@@ -55,11 +69,11 @@ func draw_polyline(pts: PackedVector2Array, col: Color, w: float = 1.0, _aa: boo
 
 func draw_circle(p: Vector2, r: float, col: Color, _filled: bool = true, _w: float = -1.0, _aa: bool = false) -> void:
 	var n := clampi(int(r * 1.2) + 6, 6, 18)
-	var c := p + off
-	var prev := c + Vector2(r, 0)
+	var c := _t(p)
+	var prev := _t(p + Vector2(r, 0))
 	for k in range(1, n + 1):
 		var a := k * TAU / n
-		var nx := c + Vector2(cos(a), sin(a)) * r
+		var nx := _t(p + Vector2(cos(a), sin(a)) * r)
 		verts.append_array([c, prev, nx])
 		cols.append(col)
 		cols.append(col)
@@ -80,7 +94,20 @@ func draw_rect(r: Rect2, col: Color, filled: bool = true, w: float = -1.0, _aa: 
 
 
 func draw_string(font: Font, pos: Vector2, text: String, _align: int = 0, _width: float = -1, size: int = 16, col: Color = Color.WHITE) -> void:
-	texts.append([font, pos + off, text, size, col])
+	texts.append([font, _t(pos), text, size, col])
+
+
+## 把累積的三角形做成網格（不含文字）；沒有東西時回傳 null。供快取重複使用。
+func to_mesh() -> ArrayMesh:
+	if verts.is_empty():
+		return null
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = verts
+	arr[Mesh.ARRAY_COLOR] = cols
+	var m := ArrayMesh.new()
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	return m
 
 
 ## 於 ci 的 _draw 中呼叫：一次畫出全部三角形，再補上文字。

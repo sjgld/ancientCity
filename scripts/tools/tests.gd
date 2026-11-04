@@ -13,7 +13,7 @@ func run(only: Array) -> void:
 	await get_tree().process_frame
 	main.title_mode = false
 	main.ui.show_title(false)
-	var all := ["bridge", "reach", "arch", "numbers", "annals"]
+	var all := ["bridge", "reach", "arch", "fill", "pave", "numbers", "annals"]
 	for name in all:
 		if not only.is_empty() and name not in only:
 			continue
@@ -73,6 +73,49 @@ func _line(a: Vector2i, b: Vector2i, kind := 1) -> void:
 
 
 # ───────────────────────── 各項 ─────────────────────────
+
+func test_fill() -> void:
+	# 河上一座橋，橋所在的格子不填；其餘水面填成陸地，河湖每格三十兩
+	_line(Vector2i(57, 30), Vector2i(66, 30))
+	var m0: float = Game.money
+	var cells := []
+	for x in range(60, 64):
+		for y in range(28, 33):
+			cells.append(Vector2i(x, y))
+	var spent := Game.fill_water(cells)
+	check("河湖填成陸地", Game.terrain[Game.idx(61, 29)] != Defs.T.WATER)
+	check("橋下的格子不填", Game.terrain[Game.idx(61, 30)] == Defs.T.WATER and Game.road[Game.idx(61, 30)] > 0)
+	check("河湖每格三十兩", spent == 16 * 30 and is_equal_approx(m0 - Game.money, spent), spent)
+	# 運河：開了再填回去，每格十兩
+	Game.rank = 1
+	Game.build_canals([Vector2i(45, 45), Vector2i(46, 45)])
+	check("開運河成水", Game.terrain[Game.idx(45, 45)] == Defs.T.WATER and Game.canal[Game.idx(45, 45)] > 0)
+	var sp2 := Game.fill_water([Vector2i(45, 45), Vector2i(46, 45)])
+	check("運河填回陸地", Game.terrain[Game.idx(45, 45)] != Defs.T.WATER and Game.canal[Game.idx(45, 45)] == 0)
+	check("運河每格十兩", sp2 == 20, sp2)
+
+
+func test_pave() -> void:
+	# 一條土路，兩旁各一座瓦屋：晉鎮後月結鋪成石板；村時不鋪
+	_line(Vector2i(40, 52), Vector2i(48, 52))
+	var a := Game.add_building("house", 44, 51)
+	var b := Game.add_building("house", 44, 53)
+	Game.buildings[a].level = 2
+	Game.buildings[b].level = 2
+	Game.rank = 0
+	Game._pave_roads()
+	check("村時不自鋪", Game.road[Game.idx(44, 52)] == 1)
+	Game.rank = 1
+	var m0: float = Game.money
+	Game._pave_roads()
+	check("兩旁瓦屋的土路鋪成石板", Game.road[Game.idx(44, 52)] == 2)
+	check("房舍稀落處仍是土路", Game.road[Game.idx(41, 52)] == 1)
+	check("每格十兩", is_equal_approx(m0 - Game.money, 10.0), m0 - Game.money)
+	Game.money = 200
+	Game.road[Game.idx(44, 52)] = 1
+	Game._pave_roads()
+	check("府庫不足三百兩不鋪", Game.road[Game.idx(44, 52)] == 1)
+
 
 func test_bridge() -> void:
 	_line(Vector2i(57, 40), Vector2i(66, 40))

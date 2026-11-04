@@ -11,16 +11,37 @@ const WALL_M := Color(0.78, 0.67, 0.5)
 const WOOD := Color(0.55, 0.36, 0.22)
 const WOOD_L := Color(0.68, 0.5, 0.32)
 const RED := Color(0.66, 0.22, 0.17)
-const ROOF_G := Color(0.36, 0.38, 0.41)
+const ROOF_G := Color(0.43, 0.48, 0.53)   # 青灰瓦：比純灰略帶青，和牆面、地面拉開明暗
 const ROOF_T := Color(0.72, 0.6, 0.36)
 const ROOF_GL := Color(0.25, 0.48, 0.38)
 const ROOF_Y := Color(0.8, 0.6, 0.18)
 const STONE := Color(0.62, 0.6, 0.56)
 const BRICK := Color(0.52, 0.5, 0.48)
 const GOLD := Color(0.9, 0.75, 0.35)
+const SIGN := Color(0.99, 0.86, 0.48)   # 匾額金字：比 GOLD 亮一點，黑底上更醒目
 const WATER := Color(0.42, 0.6, 0.62)
 
 static var season := 0
+# 界畫墨線：建築一律以墨線勾勒。外輪廓 1.4、結構線 1.0、細節（窗格、瓦壟、小擺設）不描。
+const INK_LINE := Color(0.14, 0.1, 0.08, 0.9)
+const W_OUT := 1.4
+const W_MID := 1.0
+const BUILDING_SCALE := 1.1   # 建築本體放大，街面更飽滿（台基不放大）
+static var no_ink := false     # 畫半透明疊加層（簷下陰影、高光帶）時暫時關掉描邊
+const PLINTH_H := 3.0
+const PLINTH_TYPES := ["house", "shop", "workshop", "granary", "warehouse", "constable", "clinic", "firewatch", "school", "theater", "station"]
+
+
+## 立在石砌台基上的建築：台基畫在地面層，建築本體要抬高台基的高度。
+static func on_plinth(b: Dictionary) -> bool:
+	return b.size == 1 and b.type in PLINTH_TYPES
+
+
+## 建築本體的畫法變換：以地面中心 c 放大，並抬到台基上。回傳 [位移, 縮放]，供 draw_set_transform 用。
+static func body_xf(b: Dictionary, c: Vector2, off: Vector2 = Vector2.ZERO) -> Array:
+	var k := BUILDING_SCALE
+	var lift := Vector2(0, -PLINTH_H) if on_plinth(b) else Vector2.ZERO
+	return [c + off + lift - c * k, Vector2(k, k)]
 static var rank := 0
 
 
@@ -48,13 +69,32 @@ static func poly(ci, pts: Array, col: Color) -> void:
 			return
 		clean.remove_at(clean.size() - 1)
 	ci.draw_colored_polygon(clean, col)
+	if col.a >= 0.9:
+		ink_edge(ci, clean)
+
+
+## 面的結構線：面夠大才描，窗格、瓦當這類小塊不描。
+static func ink_edge(ci, pts: PackedVector2Array, w: float = W_MID) -> void:
+	if no_ink or pts.size() < 3:
+		return
+	var r := Rect2(pts[0], Vector2.ZERO)
+	for p in pts:
+		r = r.expand(p)
+	if r.size.x * r.size.y < 60.0 or minf(r.size.x, r.size.y) < 3.0:
+		return
+	ci.draw_polyline(pts + PackedVector2Array([pts[0]]), INK_LINE, w, true)
 
 
 static func grad(ci, pts: Array, cols: Array) -> void:
 	ci.draw_polygon(PackedVector2Array(pts), PackedColorArray(cols))
+	ink_edge(ci, PackedVector2Array(pts))
 
 
+## OUT（舊的半透明褐線）一律換成墨線。
 static func line(ci, pts: Array, col: Color = OUT, w: float = 1.0) -> void:
+	if col == OUT:
+		col = INK_LINE
+		w = maxf(w, W_MID)
 	ci.draw_polyline(PackedVector2Array(pts), col, w, true)
 
 
@@ -103,8 +143,8 @@ static func box(ci, c: Vector2, a: float, b: float, h: float, col: Color, z: flo
 	grad(ci, [S, E, E + up, S + up], [col.darkened(0.08), col.darkened(0.08), col.lightened(0.04), col.lightened(0.04)])
 	if top:
 		poly(ci, [Nn + up, E + up, S + up, W + up], col.lightened(0.12))
-		line(ci, [W + up, Nn + up, E + up], OUT)
-	line(ci, [W + up, W, S, E, E + up], OUT)
+		line(ci, [W + up, Nn + up, E + up], OUT, W_OUT)
+	line(ci, [W + up, W, S, E, E + up], OUT, W_OUT)
 	line(ci, [S, S + up], OUT)
 
 
@@ -188,7 +228,8 @@ static func potted(ci, p: Vector2, v: int) -> void:
 		ci.draw_circle(p - Vector2(1, 6), 1.0, Color(0.95, 0.6, 0.7))
 
 
-## 屋頂。kind: "hip" 廡殿/歇山、"gable" 懸山、"pyramid" 攢尖。ax: 屋脊沿 x 軸。
+## 屋頂。kind: "hip" 廡殿（四坡，最尊）、"xieshan" 歇山（下四坡、上露山花）、"gable" 懸山、"pyramid" 攢尖。ax: 屋脊沿 x 軸。
+## 等級依宋制：京城廡殿；衙署大堂、寺院大殿、城樓歇山；民居、商號、作坊懸山。
 static func roof(ci, c: Vector2, a: float, b: float, z: float, rh: float, col: Color,
 		kind: String = "hip", ax: bool = true, o: float = 0.1, curl: float = 3.0) -> void:
 	var thatch := col.is_equal_approx(ROOF_T)
@@ -196,8 +237,10 @@ static func roof(ci, c: Vector2, a: float, b: float, z: float, rh: float, col: C
 	# 簷下陰影落在牆上
 	if z >= 6.0:
 		var sc := Color(0, 0, 0, 0.2)
+		no_ink = true
 		frect(ci, c, a, b, 0, 1, z - 4.5, z, sc, true)
 		frect(ci, c, a, b, 0, 1, z - 4.5, z, sc, false)
+		no_ink = false
 	var A := a if ax else b
 	var B := b if ax else a
 	var f := func(u: float, v: float, h: float) -> Vector2:
@@ -208,6 +251,8 @@ static func roof(ci, c: Vector2, a: float, b: float, z: float, rh: float, col: C
 			R = A + o
 		"hip":
 			R = maxf(A - B * 0.75, 0.04)
+		"xieshan":
+			R = maxf(A - B * 0.4, 0.06)
 		_:
 			R = 0.0
 	var steps := 8
@@ -228,7 +273,7 @@ static func roof(ci, c: Vector2, a: float, b: float, z: float, rh: float, col: C
 	var back := col.darkened(0.28)
 	var c_vpos: Color = shade if ax else lit
 	var c_upos: Color = lit if ax else shade
-	var edge := col.darkened(0.55)
+	var edge := INK_LINE
 	# 背面
 	if kind != "gable":
 		poly(ci, eave.call(-EA, EB, -EA, -EB) + [r1], back)
@@ -244,7 +289,9 @@ static func roof(ci, c: Vector2, a: float, b: float, z: float, rh: float, col: C
 		band.append((front[k] as Vector2).lerp(rr2[k], 0.35))
 	var tmp := band.duplicate()
 	tmp.reverse()
+	no_ink = true
 	poly(ci, front + tmp, c_vpos.lightened(0.06))
+	no_ink = false
 	# 側面
 	var side: Array = []
 	if kind == "gable":
@@ -256,6 +303,15 @@ static func roof(ci, c: Vector2, a: float, b: float, z: float, rh: float, col: C
 	else:
 		side = eave.call(EA, EB, EA, -EB)
 		poly(ci, side + [r2], c_upos)
+		if kind == "xieshan":
+			# 山花：屋脊兩端立起的三角牆面，下緣一道搏風，與四坡相接處即「歇」
+			var hb := z + rh * 0.48
+			var s1: Vector2 = f.call(R + 0.02, B * 0.55, hb)
+			var s2: Vector2 = f.call(R + 0.02, -B * 0.55, hb)
+			poly(ci, [s1, s2, r2], WALL_W.darkened(0.12) if ax else WALL_W.darkened(0.22))
+			ci.draw_line(s1, s2, INK_LINE, W_MID)
+			ci.draw_line(s1.lerp(r2, 0.5), s2.lerp(r2, 0.5), Color(WOOD.darkened(0.3), 0.6), 1.0)
+			line(ci, [s1, r2, s2], INK_LINE, 2.0)
 	# 瓦壟或茅草
 	if thatch:
 		for k in 14:
@@ -278,14 +334,31 @@ static func roof(ci, c: Vector2, a: float, b: float, z: float, rh: float, col: C
 	var fas2 := []
 	for p in fas:
 		fas2.append(p + Vector2(0, 2.2))
-	poly(ci, front + fas2, edge)
+	no_ink = true
+	poly(ci, front + fas2, col.darkened(0.55))
 	if not side.is_empty():
 		var s2 := side.duplicate()
 		s2.reverse()
 		var s3 := []
 		for p in s2:
 			s3.append(p + Vector2(0, 2.2))
-		poly(ci, side + s3, edge.lightened(0.1))
+		poly(ci, side + s3, col.darkened(0.45))
+	no_ink = false
+	# 簷口一道淺色高光（瓦當反光），再以墨線勾出屋簷外緣
+	if not thatch:
+		var hi := []
+		for p in front:
+			hi.append((p as Vector2) + Vector2(0, -0.8))
+		ci.draw_polyline(PackedVector2Array(hi), Color(1, 1, 1, 0.35), 1.0, true)
+	var outer := []
+	for p in front:
+		outer.append((p as Vector2) + Vector2(0, 2.2))
+	ci.draw_polyline(PackedVector2Array(outer), INK_LINE, W_OUT, true)
+	if not side.is_empty():
+		var so := []
+		for p in side:
+			so.append((p as Vector2) + Vector2(0, 2.2))
+		ci.draw_polyline(PackedVector2Array(so), INK_LINE, W_OUT, true)
 	# 垂脊
 	if kind != "gable":
 		ci.draw_line(front[0], r1, edge, 1.5)
@@ -513,7 +586,7 @@ static func courtyard(ci, c: Vector2, v: int) -> void:
 	box(ci, c + iso(0, -e), e, 0.025, 7, wc)
 	box(ci, c + iso(-e, 0), 0.025, e, 7, wc)
 	# 正房與廂房
-	hall(ci, c + iso(-0.04, -0.25), 0.3, 0.12, 14, WALL_W, ROOF_G, "hip", true, 12)
+	hall(ci, c + iso(-0.04, -0.25), 0.3, 0.12, 14, WALL_W, ROOF_G, "gable", true, 12)
 	hall(ci, c + iso(-0.27, 0.1), 0.1, 0.17, 11, WALL_W, ROOF_G, "gable", false, 9, false)
 	if v % 2 == 0:
 		tree_round(ci, c + iso(0.12, 0.1), 0.75, v)
@@ -572,11 +645,11 @@ static func shop(ci, c: Vector2, lvl: int, v: int) -> void:
 			timber(ci, p, 0.28, 0.22, 14, 10, 3)
 			for k in 3:
 				window(ci, p, 0.28, 0.22, 0.1 + k * 0.3, 0.28 + k * 0.3, 16, 22, true)
-			roof(ci, p, 0.28, 0.22, 24, 11, ROOF_G, "hip", true, 0.09, 3.0)
+			roof(ci, p, 0.28, 0.22, 24, 11, ROOF_G, "gable", true, 0.09, 3.0)
 			var bp := P(p, 0.0, 0.33, 12.5)
-			ci.draw_rect(Rect2(bp - Vector2(12, 4.5), Vector2(24, 9)), Color(0.15, 0.1, 0.08))
-			ci.draw_rect(Rect2(bp - Vector2(12, 4.5), Vector2(24, 9)), GOLD.darkened(0.3), false, 1.0)
-			label(ci, bp, boards[v % boards.size()], 7, GOLD)
+			ci.draw_rect(Rect2(bp - Vector2(14, 5.5), Vector2(28, 11)), Color(0.13, 0.09, 0.07))
+			ci.draw_rect(Rect2(bp - Vector2(14, 5.5), Vector2(28, 11)), GOLD.darkened(0.2), false, 1.0)
+			label(ci, bp + Vector2(0, -0.3), boards[v % boards.size()], 9, SIGN)
 			for k in 3:
 				box(ci, c + iso(0.4, -0.18 + k * 0.03), 0.02, 0.1, 9 - k, WOOD.darkened(0.1), 0, false, false)
 			_huang(ci, P(p, 0.38, 0.33, 20), awn, boards[v % boards.size()].substr(0, 1))
@@ -597,17 +670,17 @@ static func shop(ci, c: Vector2, lvl: int, v: int) -> void:
 				window(ci, p, 0.36, 0.3, 0.06 + k * 0.235, 0.2 + k * 0.235, 18, 25, true)
 			window(ci, p, 0.36, 0.3, 0.15, 0.45, 18, 25, false)
 			window(ci, p, 0.36, 0.3, 0.55, 0.85, 18, 25, false)
-			roof(ci, p, 0.36, 0.3, 27, 14, ROOF_G, "hip", true, 0.11, 5.0)
+			roof(ci, p, 0.36, 0.3, 27, 14, ROOF_G, "gable", true, 0.11, 5.0)
 			_cailou(ci, p, 0.44, 0.42)
 			_wineflag(ci, P(c, 0.47, 0.1), 46)
 
 
 static func _banner(ci, base: Vector2, ch: String, h: float) -> void:
 	ci.draw_line(base, base - Vector2(0, h), WOOD.darkened(0.3), 1.5)
-	var r := Rect2(base - Vector2(-1, h - 1), Vector2(8, 13))
-	ci.draw_rect(r, Color(0.95, 0.93, 0.85))
+	var r := Rect2(base - Vector2(-1, h - 1), Vector2(10, 14))
+	ci.draw_rect(r, Color(0.96, 0.94, 0.86))
 	ci.draw_rect(r, RED, false, 1.0)
-	label(ci, r.get_center() + Vector2(0, -1), ch, 8, RED.darkened(0.3))
+	label(ci, r.get_center() + Vector2(0, -1), ch, 9, RED.darkened(0.35))
 
 
 static func workshop(ci, c: Vector2, lvl: int, v: int) -> void:
@@ -703,7 +776,8 @@ static func yamen(ci, c: Vector2, v: int) -> void:
 	var wc := Color(0.62, 0.26, 0.2)
 	box(ci, c + iso(0, -e), e, 0.04, 10, wc)
 	box(ci, c + iso(-e, 0), 0.04, e, 10, wc)
-	hall(ci, c + iso(-0.2, -0.35), 0.5, 0.26, 18, WALL_W, ROOF_G, "hip", true, 18)
+	# 京城：黃琉璃廡殿；其餘衙署：青灰瓦歇山
+	hall(ci, c + iso(-0.2, -0.35), 0.5, 0.26, 18, WALL_W, ROOF_Y if rank >= 5 else ROOF_G, "hip" if rank >= 5 else "xieshan", true, 18)
 	hall(ci, c + iso(-0.62, 0.25), 0.16, 0.3, 11, WALL_W, ROOF_G, "gable", false, 9, false)
 	hall(ci, c + iso(0.55, -0.0), 0.16, 0.3, 11, WALL_W, ROOF_G, "gable", false, 9, false)
 	# 旗桿
@@ -716,11 +790,12 @@ static func yamen(ci, c: Vector2, v: int) -> void:
 	var g := c + iso(0.0, e)
 	box(ci, g, 0.26, 0.08, 14, RED)
 	face_l(ci, g, 0.26, 0.08, 0.3, 0.7, 0, 10, Color(0.35, 0.1, 0.08))
-	roof(ci, g, 0.26, 0.1, 14, 9, ROOF_G, "hip", true, 0.07, 3.0)
+	roof(ci, g, 0.26, 0.1, 14, 9, ROOF_G, "gable", true, 0.07, 3.0)
 	var names := ["里署", "鎮署", "縣衙", "州衙", "府衙", "皇城"]
 	var bp := P(g, 0, 0.12, 17)
-	ci.draw_rect(Rect2(bp - Vector2(11, 4.5), Vector2(22, 9)), Color(0.12, 0.08, 0.06))
-	label(ci, bp, names[rank], 7, GOLD)
+	ci.draw_rect(Rect2(bp - Vector2(13, 5.5), Vector2(26, 11)), Color(0.12, 0.08, 0.06))
+	ci.draw_rect(Rect2(bp - Vector2(13, 5.5), Vector2(26, 11)), GOLD.darkened(0.2), false, 1.0)
+	label(ci, bp + Vector2(0, -0.3), names[rank], 9, SIGN)
 	for s in [-1, 1]:
 		var lp := P(c, 0.0 + s * 0.38, e + 0.2)
 		box(ci, lp, 0.05, 0.05, 3, STONE)
@@ -742,20 +817,21 @@ static func temple(ci, c: Vector2, v: int) -> void:
 	walled(ci, c, 0.92, yc, 9, func():
 		var m := c + iso(-0.15, -0.2)
 		box(ci, m, 0.5, 0.36, 4, STONE, 0, true)
-		hall(ci, m, 0.42, 0.28, 13, RED.lightened(0.1), ROOF_Y, "hip", true, 6)
+		# 重簷歇山、石綠琉璃：黃琉璃為皇家專用，縣城寺院不用
+		hall(ci, m, 0.42, 0.28, 13, RED.lightened(0.1), ROOF_GL, "hip", true, 6)
 		box(ci, m, 0.32, 0.2, 7, RED.lightened(0.1), 17)
-		roof(ci, m, 0.32, 0.2, 24, 13, ROOF_Y, "hip", true, 0.1, 4.0)
+		roof(ci, m, 0.32, 0.2, 24, 13, ROOF_GL, "xieshan", true, 0.1, 4.0)
 		var bp := P(c, 0.35, 0.35)
 		box(ci, bp, 0.07, 0.07, 6, BRICK.darkened(0.2))
 		ci.draw_circle(bp - Vector2(0, 7), 3.0, BRICK.darkened(0.3)))
 	var g := c + iso(0.0, 0.92)
 	box(ci, g, 0.2, 0.07, 12, RED)
-	roof(ci, g, 0.2, 0.08, 12, 7, ROOF_Y, "hip", true, 0.06, 2.5)
+	roof(ci, g, 0.2, 0.08, 12, 7, ROOF_GL, "gable", true, 0.06, 2.5)
 
 
 static func academy(ci, c: Vector2, v: int) -> void:
 	walled(ci, c, 0.92, WALL_W, 8, func():
-		hall(ci, c + iso(-0.25, -0.4), 0.45, 0.2, 14, WALL_W, ROOF_G, "hip", true, 13)
+		hall(ci, c + iso(-0.25, -0.4), 0.45, 0.2, 14, WALL_W, ROOF_G, "xieshan", true, 13)
 		tree_pine(ci, P(c, -0.6, 0.3), 1.0)
 		tree_round(ci, P(c, 0.5, -0.5), 1.0, v)
 		hall(ci, c + iso(0.15, 0.25), 0.35, 0.18, 11, WALL_W, ROOF_G, "gable", true, 10))
@@ -764,8 +840,9 @@ static func academy(ci, c: Vector2, v: int) -> void:
 	face_l(ci, g, 0.18, 0.06, 0.3, 0.7, 0, 8, Color(0.3, 0.2, 0.15))
 	roof(ci, g, 0.18, 0.08, 11, 6, ROOF_G, "gable", true, 0.05, 2.0)
 	var bp := P(g, 0, 0.1, 14)
-	ci.draw_rect(Rect2(bp - Vector2(11, 4.5), Vector2(22, 9)), Color(0.12, 0.08, 0.06))
-	label(ci, bp, "書院", 7, GOLD)
+	ci.draw_rect(Rect2(bp - Vector2(13, 5.5), Vector2(26, 11)), Color(0.12, 0.08, 0.06))
+	ci.draw_rect(Rect2(bp - Vector2(13, 5.5), Vector2(26, 11)), GOLD.darkened(0.2), false, 1.0)
+	label(ci, bp + Vector2(0, -0.3), "書院", 9, SIGN)
 
 
 static func _arch(ci, c: Vector2, a: float, b: float, u0: float, u1: float, h: float, left: bool) -> void:
@@ -803,7 +880,7 @@ static func belltower(ci, c: Vector2, v: int) -> void:
 			var u := (k + 0.5) / 3.0
 			frect(ci, c, 0.3, 0.3, u - 0.03, u + 0.03, z2, z2 + 11, RED.darkened(0.2), left)
 		window(ci, c, 0.3, 0.3, 0.38, 0.62, z2 + 3, z2 + 9, left)
-	roof(ci, c, 0.3, 0.3, z2 + 11, 17, ROOF_GL, "hip", true, 0.13, 5.0)
+	roof(ci, c, 0.3, 0.3, z2 + 11, 17, ROOF_GL, "xieshan", true, 0.13, 5.0)
 
 static func pagoda(ci, c: Vector2, v: int) -> void:
 	var z := 0.0
@@ -856,7 +933,7 @@ static func archway(ci, c: Vector2, v: int) -> void:
 	var bp: Vector2 = f.call(0, 29)
 	ci.draw_rect(Rect2(bp - Vector2(7.5, 4), Vector2(15, 8)), Color(0.12, 0.2, 0.32))
 	ci.draw_rect(Rect2(bp - Vector2(7.5, 4), Vector2(15, 8)), GOLD, false, 1.0)
-	label(ci, bp, "旌表", 6, GOLD)
+	label(ci, bp, "旌表", 7, SIGN)
 	# 屋頂：邊樓低、明樓高
 	var ra := 0.12
 	var rb := 0.09
@@ -901,7 +978,7 @@ static func theater(ci, c: Vector2, v: int) -> void:
 		var q := P(st, -0.05 + k * 0.14, 0.0, 6)
 		ci.draw_line(q, q - Vector2(0, 6), [Color(0.85, 0.2, 0.15), Color(0.2, 0.4, 0.7)][k], 3.0)
 		ci.draw_circle(q - Vector2(0, 7.5), 1.5, Color(0.95, 0.85, 0.75))
-	roof(ci, st, 0.24, 0.18, 19, 11, ROOF_G, "hip", true, 0.1, 5.0)
+	roof(ci, st, 0.24, 0.18, 19, 11, ROOF_G, "xieshan", true, 0.1, 5.0)
 	# 腰棚：三層看席
 	for k in 3:
 		var sp := c + iso(0.18 + k * 0.08, 0.06 + k * 0.08)
@@ -935,7 +1012,7 @@ static func small_office(ci, c: Vector2, sg: String, wall: Color, v: int) -> voi
 	window(ci, p, 0.3, 0.24, 0.12, 0.28, 7, 12, true)
 	window(ci, p, 0.3, 0.24, 0.72, 0.88, 7, 12, true)
 	window(ci, p, 0.3, 0.24, 0.32, 0.68, 7, 12, false)
-	roof(ci, p, 0.3, 0.24, 14, 12, ROOF_G, "hip", true, 0.09, 3.0)
+	roof(ci, p, 0.3, 0.24, 14, 12, ROOF_G, "gable", true, 0.09, 3.0)
 	for k in 2:
 		var sp := P(c, 0.1 + k * 0.2, 0.38)
 		box(ci, sp, 0.025, 0.025, 2, STONE, 0, true, false)
@@ -1200,12 +1277,12 @@ static func kiln(ci, c: Vector2, v: int) -> void:
 		ci.draw_line(P(c, q[0], q[1]), P(c, q[0], q[1], 17), WOOD.darkened(0.2), 1.5)
 	roof(ci, c, 0.46, 0.2, 17, 7, ROOF_G, "gable", true, 0.05, 1.0)
 	box(ci, c + iso(0.47, -0.12), 0.05, 0.05, 30, BRICK)
-	# 成品瓷器
+	# 成品瓷器：宋代名窯以青瓷為主（青花是元明以後）
 	box(ci, c + iso(0.1, 0.4), 0.18, 0.05, 3, WOOD, 0, true, false)
 	for k in 4:
 		var q := P(c, -0.02 + k * 0.08, 0.4, 3)
-		ell(ci, q - Vector2(0, 2.5), 2.4, 2.6, Color(0.92, 0.94, 0.96))
-		ci.draw_line(q - Vector2(1.6, 3), q - Vector2(-1.6, 3), Color(0.25, 0.4, 0.75), 1.2)
+		ell(ci, q - Vector2(0, 2.5), 2.4, 2.6, Color(0.64, 0.79, 0.69) if k % 2 == 0 else Color(0.86, 0.9, 0.86))
+		ci.draw_line(q - Vector2(1.2, 4.2), q - Vector2(-0.4, 4.6), Color(1, 1, 1, 0.6), 1.0)
 	ell(ci, P(c, -0.3, 0.38) + Vector2(0, -2), 4.0, 2.4, Color(0.8, 0.78, 0.72))
 
 static func station(ci, c: Vector2, v: int) -> void:
@@ -1216,7 +1293,7 @@ static func station(ci, c: Vector2, v: int) -> void:
 	box(ci, p, 0.24, 0.2, 10, WALL_W, 3, false, false)
 	timber(ci, p, 0.24, 0.2, 3, 10, 3)
 	door(ci, p, 0.24, 0.2, 0.5, 0.3, 8, true, 3, false, WOOD.darkened(0.2))
-	roof(ci, p, 0.24, 0.2, 13, 11, ROOF_G, "hip", true, 0.08, 3.0)
+	roof(ci, p, 0.24, 0.2, 13, 11, ROOF_G, "gable", true, 0.08, 3.0)
 	# 馬廄
 	var st := c + iso(0.26, 0.04)
 	for q in [[-0.16, 0.12], [0.16, 0.12], [0.16, -0.12], [-0.16, -0.12]]:
@@ -1230,7 +1307,7 @@ static func station(ci, c: Vector2, v: int) -> void:
 	var fp := P(c, 0.02, 0.42)
 	ci.draw_line(fp, fp - Vector2(0, 32), INK, 1.5)
 	poly(ci, [fp - Vector2(0, 32), fp - Vector2(-13, 30), fp - Vector2(-13, 20), fp - Vector2(0, 22)], Color(0.92, 0.75, 0.25))
-	label(ci, fp - Vector2(-6.5, 26), "驛", 8, RED.darkened(0.2))
+	label(ci, fp - Vector2(-6.5, 26), "驛", 9, RED.darkened(0.3))
 
 
 static func dock(ci, c: Vector2, v: int, wdir: Vector2i) -> void:
@@ -1276,7 +1353,7 @@ static func town(ci, c: Vector2, name: String) -> void:
 	box(ci, g, 0.25, 0.1, 18, wc)
 	face_l(ci, g, 0.25, 0.1, 0.35, 0.65, 0, 11, Color(0.12, 0.1, 0.08))
 	box(ci, g, 0.2, 0.08, 9, RED, 18)
-	roof(ci, g, 0.22, 0.1, 27, 10, ROOF_G, "hip", true, 0.08, 4.0)
+	roof(ci, g, 0.22, 0.1, 27, 10, ROOF_G, "xieshan", true, 0.08, 4.0)
 	var lp := P(c, 0, 0, 70)
 	var f: Font = Defs.font
 	var w := f.get_string_size(name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16).x + 14
@@ -1313,7 +1390,7 @@ static func wall_tile(ci, c: Vector2, conn: Array, gate: bool, road_ax_x: bool) 
 		else:
 			face_l(ci, c, a, b, 0.3, 0.7, 0, 12, Color(0.1, 0.08, 0.07))
 		box(ci, c, a * 0.85, b * 0.85, 9, RED, 20)
-		roof(ci, c, a * 0.85, b * 0.85, 29, 10, ROOF_G, "hip", not road_ax_x, 0.08, 3.5)
+		roof(ci, c, a * 0.85, b * 0.85, 29, 10, ROOF_G, "xieshan", not road_ax_x, 0.08, 3.5)
 	else:
 		box(ci, c, t + 0.02, t + 0.02, h + 2, col.darkened(0.05), 0, true)
 	if conn[0]:
@@ -1326,10 +1403,12 @@ static func wall_tile(ci, c: Vector2, conn: Array, gate: bool, road_ax_x: bool) 
 			box(ci, c + iso(0, 0.12 + k * 0.22), t, 0.04, 3, col, h, true)
 
 
-static func bridge(ci, c: Vector2, ax_x: bool, stone: bool, ramp_neg: bool = false, ramp_pos: bool = false) -> void:
+## 平橋。high：架在通航水面上，改為高腳木橋，橋面抬到 14 像素，船可從橋下過（橋面高度須與 world_view.gd 的 deck_at() 一致）。
+static func bridge(ci, c: Vector2, ax_x: bool, stone: bool, ramp_neg: bool = false, ramp_pos: bool = false, high: bool = false) -> void:
 	var col := STONE.lightened(0.05) if stone else WOOD_L
 	var a := 0.5 if ax_x else 0.22
 	var b := 0.22 if ax_x else 0.5
+	var top := 14.0 if high else 7.0
 	# 臨岸一端加斜板，接到岸上路面
 	var f := func(u: float, w: float, h: float) -> Vector2:
 		return P(c, u, w, h) if ax_x else P(c, w, u, h)
@@ -1337,14 +1416,21 @@ static func bridge(ci, c: Vector2, ax_x: bool, stone: bool, ramp_neg: bool = fal
 		if not e[0]:
 			continue
 		var sg: float = e[1]
-		poly(ci, [f.call(0.5 * sg, -0.22, 7), f.call(0.82 * sg, -0.22, 0), f.call(0.82 * sg, 0.22, 0), f.call(0.5 * sg, 0.22, 7)], col.darkened(0.05))
-		poly(ci, [f.call(0.5 * sg, 0.22, 7), f.call(0.82 * sg, 0.22, 0), f.call(0.82 * sg, 0.22, -2), f.call(0.5 * sg, 0.22, 4)], col.darkened(0.3))
+		poly(ci, [f.call(0.5 * sg, -0.22, top), f.call(0.82 * sg, -0.22, 0), f.call(0.82 * sg, 0.22, 0), f.call(0.5 * sg, 0.22, top)], col.darkened(0.05))
+		poly(ci, [f.call(0.5 * sg, 0.22, top), f.call(0.82 * sg, 0.22, 0), f.call(0.82 * sg, 0.22, -2), f.call(0.5 * sg, 0.22, top - 3)], col.darkened(0.3))
+	# 橋柱：高腳橋每格兩對，柱下加一道斜撐
 	for u in [-0.3, 0.3]:
-		var q := P(c, u if ax_x else 0.0, 0.0 if ax_x else u)
-		ci.draw_line(q + Vector2(0, 2), q - Vector2(0, 5), col.darkened(0.35), 3.0)
-	box(ci, c, a, b, 3, col, 4, true)
-	var r0 := P(c, -a, b, 9) if ax_x else P(c, a, -b, 9)
-	var r1 := P(c, a, b, 9)
+		for w in ([-0.18, 0.18] if high else [0.0]):
+			var q := P(c, u, w) if ax_x else P(c, w, u)
+			ci.draw_line(q + Vector2(0, 2), q - Vector2(0, top - 2), col.darkened(0.35), 2.4 if high else 3.0)
+	if high:
+		for w in [-0.18, 0.18]:
+			var q0 := P(c, -0.3, w, 1) if ax_x else P(c, w, -0.3, 1)
+			var q1 := P(c, 0.3, w, top - 4) if ax_x else P(c, w, 0.3, top - 4)
+			ci.draw_line(q0, q1, col.darkened(0.4), 1.2)
+	box(ci, c, a, b, 3, col, top - 3, true)
+	var r0 := P(c, -a, b, top + 2) if ax_x else P(c, a, -b, top + 2)
+	var r1 := P(c, a, b, top + 2)
 	line(ci, [r0, r1], col.darkened(0.3), 1.5)
 	for k in 5:
 		var q := r0.lerp(r1, k / 4.0)
@@ -1667,8 +1753,8 @@ static func combo_deco(ci, kind: String, c: Vector2, size: int, v: int, btype: S
 				box(ci, c + iso(-0.3, 0.45), 0.16, 0.05, 3, WOOD, 0, true, false)
 				for k in 4:
 					var q := P(c, -0.42 + k * 0.08, 0.45, 3)
-					ell(ci, q - Vector2(0, 3), 2.2, 3.0, Color(0.92, 0.94, 0.96))
-					ci.draw_line(q - Vector2(1.6, 3.5), q - Vector2(-1.6, 3.5), Color(0.25, 0.4, 0.75), 1.2)
+					ell(ci, q - Vector2(0, 3), 2.2, 3.0, Color(0.64, 0.79, 0.69) if k % 2 == 0 else Color(0.86, 0.9, 0.86))
+					ci.draw_line(q - Vector2(1.0, 4.8), q - Vector2(-0.4, 5.2), Color(1, 1, 1, 0.6), 1.0)
 				var fp := P(c, -0.5, -0.1)
 				ci.draw_line(fp, fp - Vector2(0, 34), INK, 1.5)
 				poly(ci, [fp - Vector2(0, 34), fp - Vector2(-12, 32), fp - Vector2(-12, 22), fp - Vector2(0, 24)], Color(0.92, 0.75, 0.25))
@@ -1734,9 +1820,9 @@ static func _parasol(ci, base: Vector2, h: float, r: float, col: Color) -> void:
 static func _huang(ci, p: Vector2, col: Color, ch: String) -> void:
 	var tip := p + Vector2(9, -3)
 	ci.draw_line(p, tip, WOOD.darkened(0.3), 1.4)
-	var r := Rect2(tip + Vector2(-3.5, 0), Vector2(7, 17))
+	var r := Rect2(tip + Vector2(-4, 0), Vector2(8, 17))
 	poly(ci, [r.position, r.position + Vector2(r.size.x, 0), r.end + Vector2(0.8, 0), r.position + Vector2(-0.4, r.size.y)], col)
-	label(ci, r.get_center() + Vector2(0, -2), ch, 7, Color(0.98, 0.95, 0.88))
+	label(ci, r.get_center() + Vector2(0, -2), ch, 8, Color(1.0, 0.97, 0.9))
 
 
 static func _cailou(ci, p: Vector2, a: float, b: float) -> void:
@@ -1864,7 +1950,7 @@ static func clinic(ci, c: Vector2, v: int) -> void:
 
 static func school(ci, c: Vector2, v: int) -> void:
 	var hp := c + iso(-0.14, -0.16)
-	hall(ci, hp, 0.24, 0.18, 12, WALL_W, ROOF_G, "hip", true, 10, false)
+	hall(ci, hp, 0.24, 0.18, 12, WALL_W, ROOF_G, "gable", true, 10, false)
 	var wc := Color(0.93, 0.91, 0.86)
 	var e := 0.44
 	box(ci, c + iso(0, e), e, 0.025, 8, wc, 0, true, false)
@@ -1977,7 +2063,8 @@ static func building(ci, type: String, c: Vector2, lvl: int, v: int) -> void:
 
 # ───────────────────────── 車船人物 ─────────────────────────
 
-static func vehicle(ci, kind: String, dir: Vector2i, cargo_col: Color, loaded: bool) -> void:
+## mast：福船桅杆，1 豎起、0 放倒（過橋時）。
+static func vehicle(ci, kind: String, dir: Vector2i, cargo_col: Color, loaded: bool, mast: float = 1.0) -> void:
 	var u := iso(dir.x, dir.y).normalized()
 	var w := iso(-dir.y, dir.x).normalized()
 	match kind:
@@ -2017,10 +2104,16 @@ static func vehicle(ci, kind: String, dir: Vector2i, cargo_col: Color, loaded: b
 			poly(ci, [cab + w * 3 - u * 3, cab + w * 3 + u * 3, cab + u * 3 - Vector2(0, 9), cab - u * 3 - Vector2(0, 9)], Color(0.28, 0.24, 0.2))
 			if big:
 				var m := u * 2
-				ci.draw_line(m, m - Vector2(0, 30), WOOD.darkened(0.3), 1.5)
-				poly(ci, [m - Vector2(0, 29) + w * 1, m - Vector2(0, 9) + w * 1, m - Vector2(0, 9) - u * 9 + w * 1, m - Vector2(0, 27) - u * 7 + w * 1], Color(0.7, 0.4, 0.25))
-				for k in 4:
-					ci.draw_line(m - Vector2(0, 12 + k * 4.5), m - Vector2(0, 12 + k * 4.5) - u * 8, Color(0.4, 0.2, 0.1), 0.8)
+				if mast >= 0.99:
+					ci.draw_line(m, m - Vector2(0, 30), WOOD.darkened(0.3), 1.5)
+					poly(ci, [m - Vector2(0, 29) + w * 1, m - Vector2(0, 9) + w * 1, m - Vector2(0, 9) - u * 9 + w * 1, m - Vector2(0, 27) - u * 7 + w * 1], Color(0.7, 0.4, 0.25))
+					for k in 4:
+						ci.draw_line(m - Vector2(0, 12 + k * 4.5), m - Vector2(0, 12 + k * 4.5) - u * 8, Color(0.4, 0.2, 0.1), 0.8)
+				else:
+					# 落桅：帆收攏捆在桅上，桅杆向船尾放倒
+					var top := m + Vector2(0, -30).lerp(-u * 22 - Vector2(0, 6), 1.0 - mast)
+					ci.draw_line(m, top, WOOD.darkened(0.3), 1.5)
+					ci.draw_line(m.lerp(top, 0.3), m.lerp(top, 0.9), Color(0.62, 0.36, 0.22), 3.0)
 
 
 # ───────────────────────── 行人 ─────────────────────────

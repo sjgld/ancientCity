@@ -4,6 +4,7 @@ extends CanvasLayer
 const UIArt = preload("res://scripts/ui/ui_art.gd")
 const Art = preload("res://scripts/view/art.gd")
 const ScrollView = preload("res://scripts/ui/scroll_view.gd")
+const Motion = preload("res://scripts/view/motion.gd")
 
 const TOP_H := 50.0
 const BOTTOM_H := 66.0
@@ -20,6 +21,13 @@ const CATS := [
 ]
 const BOOK_TABS := [["policy", "政務", "gov"], ["stock", "倉廩", "store"], ["routes", "商路", "route"], ["stats", "年鑑", "chart"], ["combos", "圖鑑", "deco"], ["scrolls", "長卷", "scroll"], ["help", "須知", "bookmark"]]
 const SEASON_ICON := ["spring", "summer", "autumn", "winter"]
+# 立季紙籤：節氣與它的第一候（《禮記·月令》），再加一句與玩法相關的提醒
+const SEASON_CARD := [
+	{"ch": "春", "term": "立春", "hou": "東風解凍", "tip": "春耕開始，農田漸有收成"},
+	{"ch": "夏", "term": "立夏", "hou": "螻蟈鳴", "tip": "田禾長成，四到六月留意旱澇"},
+	{"ch": "秋", "term": "立秋", "hou": "涼風至", "tip": "秋收最豐，糧倉要夠大"},
+	{"ch": "冬", "term": "立冬", "hou": "水始冰", "tip": "冬季幾無收成，靠存糧過冬"},
+]
 const COVER_NAME := {"water": "水", "health": "醫", "security": "治安", "fire": "防火", "edu": "教化", "faith": "信仰", "fun": "娛樂"}
 
 var main
@@ -83,6 +91,14 @@ var music_btn: MenuRow
 var scale_btn: MenuRow
 var dock_btns := {}
 var scroll_viewer = null
+var motion_btn: MenuRow
+var _anims := {}                       # 進行中的介面動效：控制項 → [Tween, 目標位置或 null]
+var roll := {"money": NAN, "pop": NAN}   # 天頭數字滾動中的顯示值
+var last_quest := ""
+var last_season := -1
+var scroll_note: Control = null   # 「展卷」紙條，換季紙籤要避開它
+var hover_text := ""
+var last_log := ""
 
 
 func _ready() -> void:
@@ -106,9 +122,107 @@ func _ready() -> void:
 	_build_title()
 	Game.message.connect(_on_message)
 	Game.rank_changed.connect(_on_rank)
-	Game.month_passed.connect(func(): main.world.overlay.queue_redraw())
+	Game.month_passed.connect(func():
+		main.world.overlay.queue_redraw()
+		if Game.season() != last_season:
+			if last_season >= 0 and not main.title_mode:
+				_season_slip(Game.season())
+			last_season = Game.season()
+		if Game.report.get("net", 0.0) < 0.0 and Motion.full:
+			top_money.sink = 0.0)
+	Game.map_reset.connect(func():
+		roll = {"money": NAN, "pop": NAN}
+		last_quest = ""
+		last_season = Game.season()
+		minimap.built_rev = -1
+		minimap.t = 0.0)
 	Game.quest_done.connect(_on_quest_done)
 	Game.combo_found.connect(_on_combo)
+
+
+# ───────────────────────── 動效 ─────────────────────────
+
+## 進場：自 off 偏移處淡入、減速滑到原位。wait 為真時先等一幀，讓容器排好版再取目標位置。
+## 「簡」模式直接顯示。
+func _enter(c: Control, off: Vector2, dur: float, wait: bool = false) -> void:
+	_settle(c)
+	if not Motion.full or dur <= 0.0:
+		return
+	if wait:
+		c.modulate.a = 0.0
+		var tok := RefCounted.new()
+		_anims[c] = [tok, null]
+		await get_tree().process_frame
+		if _anims.get(c, [null])[0] != tok:
+			return
+		_anims.erase(c)
+		c.modulate.a = 1.0
+		if not c.visible:
+			return
+	var target := c.position
+	c.position = target + off
+	c.modulate.a = 0.0
+	var tw := create_tween().set_parallel().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_property(c, "position", target, dur)
+	tw.tween_property(c, "modulate:a", 1.0, dur * 0.8)
+	_anims[c] = [tw, target]
+	tw.finished.connect(func():
+		if _anims.has(c) and _anims[c][0] == tw:
+			_anims.erase(c))
+
+
+## 只淡入，不移位（換頁、換托板內容用）。
+func _fade_in(c: CanvasItem, dur: float) -> void:
+	_settle(c)
+	if not Motion.full or dur <= 0.0:
+		return
+	c.modulate.a = 0.0
+	var tw := create_tween().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_property(c, "modulate:a", 1.0, dur)
+	_anims[c] = [tw, null]
+	tw.finished.connect(func():
+		if _anims.has(c) and _anims[c][0] == tw:
+			_anims.erase(c))
+
+
+## 中止進行中的動效，直接到結束狀態。
+func _settle(c) -> void:
+	if not _anims.has(c):
+		return
+	var a: Array = _anims[c]
+	if a[0] is Tween and a[0].is_valid():
+		a[0].kill()
+	if a[1] != null:
+		c.position = a[1]
+	c.modulate.a = 1.0
+	_anims.erase(c)
+
+
+## 天頭的銀兩、人丁滾動計數，約三百毫秒到位。回傳是否仍在滾動。
+func _roll(delta: float) -> bool:
+	var moving := false
+	for k in roll:
+		var target: float = Game.money if k == "money" else float(Game.stats.pop)
+		var cur: float = roll[k]
+		if is_nan(cur) or not Motion.full or main.title_mode:
+			if cur != target:
+				roll[k] = target
+				moving = moving or not is_nan(cur)
+			continue
+		if absf(target - cur) < 0.5:
+			if cur != target:
+				roll[k] = target
+				moving = true
+			continue
+		roll[k] = lerpf(cur, target, 1.0 - exp(-delta * 14.0))
+		moving = true
+	return moving
+
+
+func _toggle_motion() -> void:
+	main.toggle_motion()
+	motion_btn.key = "全" if Motion.full else "簡"
+	motion_btn.queue_redraw()
 
 
 # ───────────────────────── 樣式 ─────────────────────────
@@ -162,7 +276,8 @@ func _make_theme() -> Theme:
 
 ## 可在文字中以 {i:名} 嵌入的圖示；開局時在一張子畫面上畫成圖集。
 const INLINE_ICONS := ["silver", "people", "mood", "mood_good", "mood_bad", "grain", "road", "zone", "store", "route",
-	"check", "cross", "good", "bad", "note", "hint", "locate", "water", "fire", "land", "civic", "industry", "gov", "chart"]
+	"check", "cross", "good", "bad", "note", "hint", "locate", "water", "fire", "land", "civic", "industry", "gov", "chart",
+	"c_grain", "c_fish", "c_wood", "c_stone", "c_iron", "c_silk", "c_tea", "c_ware", "c_cloth", "c_porcelain"]
 var _icon_tex := {}
 var _icon_re := RegEx.create_from_string("\\{i:([a-z_]+)\\}")
 
@@ -248,7 +363,10 @@ static func head(text: String) -> String:
 	return "[font_size=18][color=#29241f][b]%s[/b][/color][/font_size]" % text
 
 
+## 十四號以下的敘述字改用霞鶩文楷 Medium：楷體筆畫細，小字用 Regular 會發虛。
 func _label(text: String, size: int = 16, col: Color = INK, kind: String = "body") -> Label:
+	if kind == "body" and size <= 14:
+		kind = "body_b"
 	var l := Label.new()
 	l.text = text
 	l.add_theme_font_override("font", UIArt.font(kind))
@@ -344,15 +462,15 @@ func _build_menu() -> void:
 	var items := [["存檔", "F5", _save], ["讀檔", "F9", func():
 		if not main.load_saved():
 			toast("讀檔失敗", true)], ["配樂", "", _toggle_music], ["須知", "", func(): open_window("help")],
-		["介面大小", "", _cycle_scale], ["返回開場", "", func(): show_title(true)]]
+		["介面大小", "", _cycle_scale], ["動態", "", _toggle_motion], ["返回開場", "", func(): show_title(true)]]
 	for it in items:
 		var b := MenuRow.new()
 		b.label = it[0]
 		b.key = it[1]
 		b.pressed.connect(func():
 			Sfx.play("click")
-			# 調整介面大小時選單留著，方便連按比較
-			if it[0] != "介面大小":
+			# 調整介面大小、動態時選單留著，方便連按比較
+			if it[0] != "介面大小" and it[0] != "動態":
 				menu_panel.visible = false
 			it[2].call())
 		v.add_child(b)
@@ -360,6 +478,8 @@ func _build_menu() -> void:
 			music_btn = b
 		if it[0] == "介面大小":
 			scale_btn = b
+		if it[0] == "動態":
+			motion_btn = b
 	menu_panel.visible = false
 
 
@@ -373,6 +493,11 @@ func _toggle_menu() -> void:
 	if scale_btn:
 		scale_btn.key = main.ui_scale_label()
 		scale_btn.queue_redraw()
+	if motion_btn:
+		motion_btn.key = "全" if Motion.full else "簡"
+		motion_btn.queue_redraw()
+	if menu_panel.visible:
+		_enter(menu_panel, Vector2(0, -6), 0.15)
 
 
 func _cycle_scale() -> void:
@@ -412,16 +537,17 @@ func _update_top() -> void:
 	var dm := ""
 	if Game.report.has("net"):
 		dm = ("▲%d" if net >= 0 else "▼%d") % absi(int(net))
-	top_money.set_data(_fmt(int(Game.money)), dm, net >= 0, "", -1.0, Game.money < 0)
+	var mshow: float = Game.money if is_nan(roll.money) else roll.money
+	top_money.set_data(_fmt(int(round(mshow))), dm, net >= 0, "", -1.0, Game.money < 0)
 	top_money.tooltip_text = _money_tip()
 	# 人丁：晉升進度
 	if Game.rank < Defs.RANKS.size() - 1:
 		var nx: Dictionary = Defs.RANKS[Game.rank + 1]
 		var p0: int = Defs.RANKS[Game.rank]["pop"]
-		top_pop.set_data(_fmt(s.pop), "", true, "距晉%s\n尚欠 %d" % [nx.name, maxi(0, nx.pop - s.pop)],
+		top_pop.set_data(_fmt(_pop_shown()), "", true, "距晉%s\n尚欠 %d" % [nx.name, maxi(0, nx.pop - s.pop)],
 			clampf(float(s.pop - p0) / maxf(1, nx.pop - p0), 0, 1), false, "／%s" % _fmt(nx.pop))
 	else:
-		top_pop.set_data(_fmt(s.pop), "", true, "", -1.0)
+		top_pop.set_data(_fmt(_pop_shown()), "", true, "", -1.0)
 	top_pop.tooltip_text = "人丁 %d\n勞力 %d　職缺 %d\n失業 %d%%" % [s.pop, s.labor, s.jobs, int(s.unemp * 100)]
 	# 民心：三態臉與月變化
 	var hp := int(s.happy)
@@ -445,6 +571,10 @@ func _update_top() -> void:
 	demand.queue_redraw()
 	if not speed_btns[Game.speed].button_pressed:
 		speed_btns[Game.speed].button_pressed = true
+
+
+func _pop_shown() -> int:
+	return Game.stats.pop if is_nan(roll.pop) else int(round(roll.pop))
 
 
 func _money_tip() -> String:
@@ -552,7 +682,12 @@ func _fill_palette() -> void:
 		palette_wrap.visible = false
 		_place_log()
 		return
-	palette_wrap.visible = true
+	# 托板自地頭抽出；已開著時換類只把內容淡換
+	if palette_wrap.visible:
+		_fade_in(palette, 0.12)
+	else:
+		palette_wrap.visible = true
+		_enter(palette_wrap, Vector2(0, 18), 0.15, true)
 	var items := []
 	match cur_cat:
 		"road":
@@ -710,6 +845,7 @@ func _scroll_notice(k: int) -> void:
 		b.queue_free()
 		open_scroll(k)))
 	root.add_child(b)
+	scroll_note = b
 	b.reset_size()
 	b.position = Vector2((root.size.x - b.size.x) * 0.5, TOP_H + 64)
 	var tw := create_tween()
@@ -822,7 +958,15 @@ func _on_info_meta(meta: Variant) -> void:
 	toast("選定地點以%s%s" % ["劃設" if id.begins_with("zone_") else "建造", nm])
 
 
+## 冊頁：由隱而現時自右側滑入；已開著換選取則只換內容。
 func show_info() -> void:
+	var was := info_panel.visible
+	_show_info()
+	if info_panel.visible and not was:
+		_enter(info_panel, Vector2(24, 0), 0.18)
+
+
+func _show_info() -> void:
 	for c in info_btns.get_children():
 		c.queue_free()
 	info_pic.visible = false
@@ -888,7 +1032,7 @@ func _vehicle_text(v: Dictionary) -> String:
 		t += "，前往 [b]%s[/b]" % Game.bname(Game.buildings[v.to])
 	t += "\n"
 	if v.amt > 0:
-		t = "[stats]store,%d／%d,載%s;road,%.1f,每日格數;silver,%d,月費[/stats]" % [int(v.amt), d.cap, Defs.cargo_name(v.cargo), d.speed, d.upkeep] + t
+		t = "[stats]%s,%d／%d,載%s;road,%.1f,每日格數;silver,%d,月費[/stats]" % [Defs.cargo_icon(v.cargo), int(v.amt), d.cap, Defs.cargo_name(v.cargo), d.speed, d.upkeep] + t
 	else:
 		t = "[stats]store,0／%d,空載;road,%.1f,每日格數;silver,%d,月費[/stats]" % [d.cap, d.speed, d.upkeep] + t
 	return t
@@ -961,6 +1105,11 @@ func _on_message(_text: String, kind: int) -> void:
 			break
 	log_panel.lines = lines
 	log_panel.age = 0.0
+	# 新的一則從下方滑入，舊行上推
+	var top: String = lines[0].text if not lines.is_empty() else ""
+	if top != last_log and last_log != "" and Motion.full:
+		log_panel.slide = 1.0
+	last_log = top
 	log_panel.queue_redraw()
 
 
@@ -984,6 +1133,8 @@ func _build_toast() -> void:
 
 
 func toast(text: String, bad: bool = false) -> void:
+	var was := toast_panel.visible and not _anims.has(toast_panel)
+	_settle(toast_panel)
 	toast_label.text = text
 	toast_label.add_theme_color_override("font_color", VERM if bad else INK)
 	toast_panel.visible = true
@@ -991,6 +1142,54 @@ func toast(text: String, bad: bool = false) -> void:
 	toast_panel.offset_left = -toast_panel.size.x * 0.5
 	toast_panel.offset_right = toast_panel.size.x * 0.5
 	toast_t = 2.5
+	if not was:
+		_enter(toast_panel, Vector2(0, -14), 0.22)
+
+
+## 換季：一張紙籤從天頭後方、日期下面垂下來，停一會兒再收回去。
+func _season_slip(sea: int) -> void:
+	var d: Dictionary = SEASON_CARD[sea]
+	var p := PanelContainer.new()
+	p.add_theme_stylebox_override("panel", UIArt.box("paper", UIArt.PAPER, 14, 10, 3.0, true))
+	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", 12)
+	h.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	p.add_child(h)
+	var seal := SealBox.new()
+	seal.ch = d.ch
+	h.add_child(seal)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 2)
+	v.alignment = BoxContainer.ALIGNMENT_CENTER
+	h.add_child(v)
+	v.add_child(_label("%s　%s" % [d.term, d.hou], 19, INK, "title"))
+	v.add_child(_label(d.tip, 15, UIArt.INK_2))
+	root.add_child(p)
+	# 排在天頭之下，收起時藏到天頭後面
+	root.move_child(p, top_band.get_index())
+	p.reset_size()
+	var dr := top_date.get_global_rect()
+	var x := clampf(dr.get_center().x - p.size.x * 0.5, 12, root.size.x - p.size.x - 12)
+	var shown := Vector2(x, TOP_H + 8)
+	# 底下若有提示或「展卷」紙條，停在它們下方，不疊在一起
+	var mine := Rect2(Vector2(x, TOP_H + 8), p.size)
+	for n in [toast_panel, scroll_note]:
+		if n != null and is_instance_valid(n) and n.visible:
+			var r: Rect2 = n.get_global_rect()
+			if r.position.x < mine.end.x and r.end.x > mine.position.x:
+				shown.y = maxf(shown.y, r.end.y + 8)
+	var hidden := Vector2(x, TOP_H - p.size.y - 4)
+	var tw := create_tween()
+	if Motion.full:
+		p.position = hidden
+		tw.tween_property(p, "position", shown, 0.38).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		tw.tween_interval(3.2)
+		tw.tween_property(p, "position", hidden, 0.3).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	else:
+		p.position = shown
+		tw.tween_interval(3.6)
+	tw.tween_callback(p.queue_free)
 
 
 ## 大事：黃紙橫幅。
@@ -1000,20 +1199,36 @@ func banner(text: String) -> void:
 	var l := _label(text, 40, INK, "title")
 	b.add_child(l)
 	b.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(b)
-	b.reset_size()
-	b.position = Vector2((root.size.x - b.size.x) * 0.5, root.size.y * 0.3)
 	# 同時有數則大事時依序出場，不疊在一起
 	var now := Time.get_ticks_msec() / 1000.0
 	var delay := maxf(0.0, banner_free_at - now)
 	banner_free_at = now + delay + 3.3
-	b.modulate.a = 0.0
+	if not Motion.full:
+		root.add_child(b)
+		b.reset_size()
+		b.position = Vector2((root.size.x - b.size.x) * 0.5, root.size.y * 0.3)
+		b.modulate.a = 0.0
+		var tf := create_tween()
+		tf.tween_interval(delay)
+		tf.tween_property(b, "modulate:a", 1.0, 0.2)
+		tf.tween_interval(2.3)
+		tf.tween_property(b, "modulate:a", 0.0, 0.8)
+		tf.tween_callback(b.queue_free)
+		return
+	# 黃紙由中線向兩端展開，兩端各一根軸；停一會兒再捲回
+	var u := Unroll.new()
+	root.add_child(u)
+	u.clip.add_child(b)
+	b.reset_size()
+	u.full = b.size + Vector2(8, 8)
+	u.center = Vector2(root.size.x * 0.5, root.size.y * 0.3 + b.size.y * 0.5)
+	u.k = 0.0
 	var tw := create_tween()
 	tw.tween_interval(delay)
-	tw.tween_property(b, "modulate:a", 1.0, 0.2)
+	tw.tween_property(u, "k", 1.0, 0.32).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tw.tween_interval(2.3)
-	tw.tween_property(b, "modulate:a", 0.0, 0.8)
-	tw.tween_callback(b.queue_free)
+	tw.tween_property(u, "k", 0.0, 0.28).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	tw.tween_callback(u.queue_free)
 
 
 func typing() -> bool:
@@ -1027,7 +1242,18 @@ func _process(delta: float) -> void:
 	if toast_t > 0:
 		toast_t -= delta
 		if toast_t <= 0:
-			toast_panel.visible = false
+			if Motion.full and toast_panel.visible:
+				_settle(toast_panel)
+				var tw := create_tween()
+				tw.tween_property(toast_panel, "modulate:a", 0.0, 0.15)
+				tw.tween_callback(func():
+					toast_panel.visible = false
+					toast_panel.modulate.a = 1.0)
+				_anims[toast_panel] = [tw, null]
+			else:
+				toast_panel.visible = false
+	if _roll(delta):
+		_update_top()
 	refresh_t -= delta
 	if refresh_t <= 0:
 		refresh_t = 0.4
@@ -1121,6 +1347,7 @@ func open_window(id: String) -> void:
 		close_windows()
 		return
 	menu_panel.visible = false
+	var was := book.visible
 	book_dim.visible = true
 	book.visible = true
 	book_marks.visible = true
@@ -1128,9 +1355,18 @@ func open_window(id: String) -> void:
 	book.move_to_front()
 	book_marks.move_to_front()
 	_show_page(id)
+	if not was:
+		# 整冊由下方升起並淡入，書籤隨之，底下的暗幕淡入
+		_enter(book, Vector2(0, 16), 0.2)
+		_enter(book_marks, Vector2(0, 16), 0.2)
+		_fade_in(book_dim, 0.2)
 
 
 func _show_page(id: String) -> void:
+	if book.visible and cur_win != "" and cur_win != id and windows.has(id):
+		_fade_in(windows[id], 0.12)
+	_settle(book)
+	_settle(book_marks)
 	cur_win = id
 	if dock_btns.has(id) and dock_btns[id].badge:
 		dock_btns[id].badge = false
@@ -1174,11 +1410,7 @@ func _fill_window(id: String, full: bool = false) -> void:
 				var h := HBoxContainer.new()
 				h.add_theme_constant_override("separation", 12)
 				body.add_child(h)
-				var sw := ColorRect.new()
-				sw.color = Defs.CARGO[c]["color"]
-				sw.custom_minimum_size = Vector2(14, 14)
-				sw.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-				h.add_child(sw)
+				h.add_child(Ico.make(Defs.cargo_icon(c), 28))
 				var l := _label("%s" % Defs.cargo_name(c), 18)
 				l.custom_minimum_size = Vector2(56, 0)
 				h.add_child(l)
@@ -1262,7 +1494,7 @@ func _fill_window(id: String, full: bool = false) -> void:
 				var lost := 0
 				for v in vs:
 					if v.amt > 0:
-						cargo.append("%s%d" % [Defs.cargo_name(v.cargo), int(v.amt)])
+						cargo.append("%s %d" % [Defs.cargo_tag(v.cargo, false), int(v.amt)])
 					if v.state == "lost":
 						lost += 1
 				var kinds := {}
@@ -1409,8 +1641,11 @@ func _rich(text: String) -> RichTextLabel:
 	r.bbcode_enabled = true
 	r.fit_content = true
 	r.scroll_active = false
-	r.text = text
 	r.custom_minimum_size = Vector2(560, 0)
+	if "{i:" in text:
+		set_rich(r, text, 20, 18)
+	else:
+		r.text = text
 	r.add_theme_font_size_override("normal_font_size", 16)
 	r.add_theme_font_size_override("bold_font_size", 17)
 	r.add_theme_constant_override("line_separation", 4)
@@ -1562,7 +1797,7 @@ func _build_quests() -> void:
 	var t := _label("詔令", 15, VERM, "title")
 	t.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	h.add_child(t)
-	quest_count = _label("", 12, Color("6b5226"))
+	quest_count = _label("", 13, Color("5e4720"))
 	h.add_child(quest_count)
 	quest_now = _label("", 18)
 	quest_now.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -1581,13 +1816,13 @@ func _build_quests() -> void:
 	quest_reward.add_theme_font_size_override("bold_font_size", 16)
 	quest_reward.add_theme_color_override("default_color", Color("6b5226"))
 	v.add_child(quest_reward)
-	quest_next = _label("", 13, UIArt.INK_3)
+	quest_next = _label("", 14, UIArt.INK_2)
 	quest_next.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	quest_next.custom_minimum_size = Vector2(248, 0)
 	v.add_child(quest_next)
 
 
-func _on_quest_done(_id: String) -> void:
+func _on_quest_done(id: String) -> void:
 	Sfx.play("coin")
 	if main.title_mode or not quest_panel.visible:
 		return
@@ -1596,6 +1831,30 @@ func _on_quest_done(_id: String) -> void:
 	quest_bar.queue_redraw()
 	quest_seal.position = quest_panel.position + Vector2(quest_panel.size.x - 74, 6)
 	quest_seal.play()
+	for q in Defs.QUESTS:
+		if q.id == id and q.reward > 0:
+			_fly_reward(q.reward)
+
+
+## 賞銀從詔令黃籤飛進天頭的銀兩，數字隨之滾動。
+func _fly_reward(amount: int) -> void:
+	if not Motion.full:
+		return
+	var l := _label("＋%s 兩" % _fmt(amount), 18, Color("6b5226"), "num")
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(l)
+	l.reset_size()
+	var from := quest_panel.position + Vector2(24, quest_panel.size.y - 30)
+	var to := top_money.get_global_rect().position + Vector2(30, 8)
+	# 蓋印之後才出發，起飛時才淡入，免得和簽上的賞銀疊在一起
+	l.position = from
+	l.modulate.a = 0.0
+	var tw := create_tween()
+	tw.tween_interval(0.5)
+	tw.tween_property(l, "position", to, 0.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	tw.parallel().tween_property(l, "modulate:a", 1.0, 0.12)
+	tw.parallel().tween_property(l, "modulate:a", 0.0, 0.2).set_delay(0.4)
+	tw.tween_callback(l.queue_free)
 
 
 func _update_quests() -> void:
@@ -1606,6 +1865,14 @@ func _update_quests() -> void:
 		quest_panel.visible = false
 		return
 	quest_panel.visible = true
+	# 換一道新詔令：黃籤由上而下展開
+	if qs[0].id != last_quest:
+		if last_quest != "" and Motion.full:
+			quest_panel.pivot_offset = Vector2.ZERO
+			quest_panel.scale = Vector2(1, 0.12)
+			var tw := create_tween().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+			tw.tween_property(quest_panel, "scale", Vector2.ONE, 0.25)
+		last_quest = qs[0].id
 	quest_count.text = "第%s道，共%s道" % [Defs.cn_num(Game.quests_done.size() + 1), Defs.cn_num(Defs.QUESTS.size())]
 	quest_now.text = qs[0].text
 	var pr: Array = Game.quest_progress(qs[0].id)
@@ -1661,15 +1928,68 @@ func set_hover(text: String, at: Vector2) -> void:
 	if text == "" or main.title_mode:
 		hover_tip.visible = false
 		return
-	set_rich(hover_label, text, 22, 18)
-	hover_tip.visible = true
-	hover_tip.reset_size()
+	# 文字沒變就不重排：富文本每幀重新解析很耗時，只更新位置
+	if text != hover_text or not hover_tip.visible:
+		var was := hover_tip.visible
+		hover_text = text
+		set_rich(hover_label, text, 22, 18)
+		hover_tip.visible = true
+		hover_tip.reset_size()
+		if not was:
+			_fade_in(hover_tip, 0.12)
 	var p := at + Vector2(18, 18)
 	if p.x + hover_tip.size.x > root.size.x:
 		p.x = at.x - hover_tip.size.x - 8
 	if p.y + hover_tip.size.y > root.size.y - BOTTOM_H:
 		p.y = at.y - hover_tip.size.y - 8
 	hover_tip.position = p
+
+
+## 大事橫幅的捲軸：黃紙由中線向兩端展開，兩端各一根木軸。k 為展開比例（0..1）。
+class Unroll extends Control:
+	var clip: Control
+	var rods: Control
+	var full := Vector2.ZERO
+	var center := Vector2.ZERO
+	var k := 0.0:
+		set(v):
+			k = v
+			_layout()
+
+	func _init() -> void:
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		clip = Control.new()
+		clip.clip_contents = true
+		clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(clip)
+		rods = Rods.new()
+		add_child(rods)
+		visible = false
+
+	func _layout() -> void:
+		var w := maxf(full.x * k, 0.0)
+		position = Vector2(center.x - w * 0.5, center.y - full.y * 0.5)
+		size = Vector2(w, full.y)
+		clip.size = size
+		rods.size = size
+		if clip.get_child_count() > 0:
+			clip.get_child(0).position = Vector2(-(full.x - w) * 0.5, 0)
+		rods.queue_redraw()
+		visible = k > 0.002
+
+	class Rods extends Control:
+		func _init() -> void:
+			mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+		func _draw() -> void:
+			var h := size.y - 8.0
+			for x in [-5.0, size.x - 3.0]:
+				var r := Rect2(x, -6, 8, h + 12)
+				draw_rect(Rect2(r.position + Vector2(2, 2), r.size), UIArt.LIFT)
+				draw_rect(r, UIArt.WOOD)
+				draw_rect(Rect2(r.position.x + 1.5, r.position.y, 2, r.size.y), UIArt.WOOD_L)
+				draw_rect(Rect2(r.position.x - 1, r.position.y - 3, 10, 4), UIArt.WOOD_D)
+				draw_rect(Rect2(r.position.x - 1, r.end.y - 1, 10, 4), UIArt.WOOD_D)
 
 
 ## 詔令進度條：墨框、泥金填色，右側寫「目前／目標」。
@@ -1809,6 +2129,22 @@ class StatTiles extends Control:
 
 
 ## 把行內圖示依序畫成一排，供圖集取用。
+## 一枚圖示（用在 Label 旁、表格裡）。
+class Ico extends Control:
+	var kind := ""
+
+	static func make(k: String, px: int) -> Ico:
+		var c := Ico.new()
+		c.kind = k
+		c.custom_minimum_size = Vector2(px, px)
+		c.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		c.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		return c
+
+	func _draw() -> void:
+		UIArt.icon(self, kind, Rect2(Vector2.ZERO, size))
+
+
 class IconPainter extends Control:
 	var kinds: Array = []
 
@@ -1875,11 +2211,19 @@ class Acct extends Control:
 	var sub := ""
 	var prog := -1.0
 	var alarm := false
+	var sink := -1.0   # 月結虧損：數字轉紅並下沉一次（秒）；負值不播
 
 	func _init(k: String) -> void:
 		icon_kind = k
 		mouse_filter = Control.MOUSE_FILTER_PASS
 		size_flags_vertical = Control.SIZE_SHRINK_CENTER
+
+	func _process(delta: float) -> void:
+		if sink >= 0.0:
+			sink += delta
+			if sink > 1.4:
+				sink = -1.0
+			queue_redraw()
 
 	func set_data(v: String, d: String, u: bool, s: String, p: float, al: bool = false, o: String = "") -> void:
 		value = v
@@ -1890,7 +2234,7 @@ class Acct extends Control:
 		alarm = al
 		of = o
 		var nf := UIArt.font("num")
-		var bf := UIArt.font("body")
+		var bf := UIArt.font("body_b")
 		var w := 32.0 + nf.get_string_size(value, HORIZONTAL_ALIGNMENT_LEFT, -1, 19).x
 		if of != "":
 			w += 3 + nf.get_string_size(of, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
@@ -1899,7 +2243,7 @@ class Acct extends Control:
 		if sub != "":
 			var sw := 0.0
 			for line in sub.split("\n"):
-				sw = maxf(sw, bf.get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x)
+				sw = maxf(sw, bf.get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x)
 			w += 8 + sw
 		custom_minimum_size = Vector2(ceilf(w), 40)
 		queue_redraw()
@@ -1908,10 +2252,12 @@ class Acct extends Control:
 		var cy := size.y * 0.5
 		UIArt.icon(self, icon_kind, Rect2(0, cy - 12, 24, 24), UIArt.IVORY)
 		var nf := UIArt.font("num")
-		var bf := UIArt.font("body")
+		var bf := UIArt.font("body_b")
 		var x := 32.0
 		var vy := cy - (3.0 if prog >= 0 else 0.0)
-		x += UIArt.text_l(self, nf, x, vy, value, 19, UIArt.BAD_W if alarm else UIArt.IVORY)
+		if sink >= 0.0:
+			vy += 3.0 * sin(PI * clampf(sink / 0.4, 0.0, 1.0))
+		x += UIArt.text_l(self, nf, x, vy, value, 19, UIArt.BAD_W if alarm or sink >= 0.0 else UIArt.IVORY)
 		if of != "":
 			x += 3 + UIArt.text_l(self, nf, x + 3, vy + 2, of, 12, UIArt.IVORY_2)
 		if prog >= 0:
@@ -1921,17 +2267,36 @@ class Acct extends Control:
 			x += 5 + UIArt.text_l(self, nf, x + 5, cy, delta, 13, UIArt.GOOD_W if up else UIArt.BAD_W)
 		if sub != "":
 			var lines := sub.split("\n")
-			var y0 := cy - (lines.size() - 1) * 7.5
+			var y0 := cy - (lines.size() - 1) * 8.0
 			for i in lines.size():
-				UIArt.text_l(self, bf, x + 8, y0 + i * 15, lines[i], 12, UIArt.BAD_W if alarm and i == lines.size() - 1 else UIArt.IVORY_2)
+				UIArt.text_l(self, bf, x + 8, y0 + i * 16, lines[i], 13, UIArt.BAD_W if alarm and i == lines.size() - 1 else Color("d6cab3"))
 
 
-## 日期：季節圖示外一圈本月進度，旁寫年號月份；暫停時變暗。
+## 一枚朱印，印文一字（立季紙籤用）。
+class SealBox extends Control:
+	var ch := ""
+
+	func _init() -> void:
+		custom_minimum_size = Vector2(52, 52)
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	func _draw() -> void:
+		UIArt.seal(self, Rect2(Vector2(2, 2), size - Vector2(4, 4)), ch, -0.06)
+
+
+## 日期：季節圖示外一圈本月進度，旁寫年號月份；暫停時變暗。換季時舊圖示縮小消失、新圖示長出來。
 class DateBox extends Control:
 	var text := ""
 	var season := "spring"
 	var prog := 0.0
 	var paused := false
+	var old_season := ""
+	var swap := 1.0
+
+	func _process(delta: float) -> void:
+		if swap < 1.0:
+			swap = minf(1.0, swap + delta / 0.6)
+			queue_redraw()
 
 	func _init() -> void:
 		mouse_filter = Control.MOUSE_FILTER_PASS
@@ -1942,6 +2307,9 @@ class DateBox extends Control:
 		if t == text and s == season and absf(p - prog) < 0.01 and pz == paused:
 			return
 		text = t
+		if s != season and Motion.full:
+			old_season = season
+			swap = 0.0
 		season = s
 		prog = p
 		paused = pz
@@ -1953,8 +2321,19 @@ class DateBox extends Control:
 		var a := 0.5 if paused else 1.0
 		draw_arc(c, 11, 0, TAU, 32, Color(UIArt.IVORY, 0.2), 2.4, true)
 		draw_arc(c, 11, -PI / 2, -PI / 2 + TAU * maxf(prog, 0.02), 32, Color(UIArt.GOLD, a), 2.4, true)
-		UIArt.icon(self, season, Rect2(c - Vector2(7, 7), Vector2(14, 14)), UIArt.IVORY)
+		if swap < 1.0 and old_season != "":
+			var k := Motion.ease_out(swap)
+			_icon_at(old_season, c, 7.0 * (1.0 - k))
+			_icon_at(season, c, 7.0 * lerpf(0.6, 1.0, k))
+		else:
+			UIArt.icon(self, season, Rect2(c - Vector2(7, 7), Vector2(14, 14)), UIArt.IVORY)
 		UIArt.text_l(self, UIArt.font("body"), 32, c.y, text, 16, Color(UIArt.IVORY, a))
+
+	## 以 c 為中心、半寬 half 畫一枚季節圖示（換季時舊的縮小消失、新的由六成長到原大）。
+	func _icon_at(kind: String, c: Vector2, half: float) -> void:
+		if half < 0.5:
+			return
+		UIArt.icon(self, kind, Rect2(c - Vector2(half, half), Vector2(half, half) * 2.0), UIArt.IVORY)
 
 
 ## 速度鍵之凹槽。
@@ -2088,6 +2467,21 @@ class CatTab extends Button:
 ## 需求條：四根用分區本身的顏色；需求高時頂端出現小箭頭。
 class DemandBars extends Control:
 	var vals := [0.0, 0.0, 0.0, 0.0]
+	var shown := [NAN, NAN, NAN, NAN]   # 柱高平滑趨近 vals
+
+	func _process(delta: float) -> void:
+		var moved := false
+		for k in 4:
+			var v: float = vals[k]
+			if is_nan(shown[k]) or not Motion.full or absf(shown[k] - v) < 0.3:
+				if shown[k] != v:
+					shown[k] = v
+					moved = true
+				continue
+			shown[k] = lerpf(shown[k], v, 1.0 - exp(-delta * 9.0))
+			moved = true
+		if moved:
+			queue_redraw()
 
 	func _init() -> void:
 		mouse_filter = Control.MOUSE_FILTER_PASS
@@ -2099,7 +2493,7 @@ class DemandBars extends Control:
 		UIArt.vtext(self, f, Vector2(8, 12), "需求", 12, UIArt.IVORY_2, 0.15)
 		for k in 4:
 			var x := 28.0 + k * 22.0
-			var v: float = clampf(vals[k], 0.0, 100.0) / 100.0
+			var v: float = clampf(vals[k] if is_nan(shown[k]) else shown[k], 0.0, 100.0) / 100.0
 			var r := Rect2(x, 12, 12, 34)
 			draw_rect(r, Color(0, 0, 0, 0.3))
 			draw_rect(r.grow(-0.5), Color(UIArt.IVORY, 0.12), false, 1.0)
@@ -2127,8 +2521,20 @@ class ToolCard extends Button:
 		custom_minimum_size = Vector2(94, 112)
 		mouse_filter = Control.MOUSE_FILTER_STOP
 
+	var lift := 0.0   # 滑過時上移兩像素，硬陰影隨之加深
+
+	func _process(delta: float) -> void:
+		var goal := 2.0 if is_hovered() and not disabled and not button_pressed and Motion.full else 0.0
+		if lift != goal:
+			lift = move_toward(lift, goal, delta * 28.0)
+			queue_redraw()
+
 	func _draw() -> void:
 		var hov := is_hovered() and not disabled
+		if lift > 0.0:
+			draw_rect(Rect2(Vector2(1, 1) + Vector2(lift, lift), size - Vector2.ONE), Color(UIArt.LIFT, UIArt.LIFT.a * lift / 2.0))
+		var up := Vector2(0, -lift)
+		draw_set_transform(up)
 		if button_pressed:
 			draw_rect(Rect2(Vector2.ZERO, size), UIArt.PAPER_2)
 			draw_rect(Rect2(Vector2(0.5, 0.5), size - Vector2.ONE), Color(UIArt.INK, 0.55), false, 1.0)
@@ -2141,9 +2547,9 @@ class ToolCard extends Button:
 			if btype in ["firewatch", "pagoda", "belltower"]:
 				s *= 0.62
 			var c := Vector2(area.get_center().x, area.end.y - 12.0 * s * bsz)
-			draw_set_transform(c, 0.0, Vector2(s, s))
+			draw_set_transform(c + up, 0.0, Vector2(s, s))
 			Art.building(self, btype, Vector2.ZERO, 2 if btype == "farm" else 1, 37)
-			draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+			draw_set_transform(up, 0.0, Vector2.ONE)
 		else:
 			UIArt.tool_thumb(self, tool_id, area.get_center() + Vector2(0, 6), 1.0)
 		if lock_rank >= 0:
@@ -2153,13 +2559,14 @@ class ToolCard extends Button:
 		UIArt.text_c(self, f, Vector2(size.x * 0.5, 79), title, 15, UIArt.INK_3 if lock_rank >= 0 else UIArt.INK)
 		var nf := UIArt.font("num")
 		if lock_rank >= 0:
-			UIArt.text_c(self, f, Vector2(size.x * 0.5, 98), "晉%s可建" % Defs.RANKS[lock_rank]["name"], 12, UIArt.INK_3)
+			UIArt.text_c(self, UIArt.font("body_b"), Vector2(size.x * 0.5, 98), "晉%s可建" % Defs.RANKS[lock_rank]["name"], 13, UIArt.INK_3)
 		elif cost > 0:
 			var t := str(cost)
 			var poor := Game.money < cost
 			var w := nf.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x + 17
 			var x0 := (size.x - w) * 0.5
-			UIArt.icon(self, "silver", Rect2(x0, 91, 14, 14))
+			UIArt.icon(self, "silver", Rect2(Vector2(x0, 91) + up, Vector2(14, 14)))
+			draw_set_transform(up)
 			UIArt.text_l(self, nf, x0 + 17, 98, t, 13, UIArt.BAD if poor else UIArt.INK_2)
 
 	func _make_custom_tooltip(_for_text: String) -> Object:
@@ -2196,15 +2603,9 @@ class ToolTipCard extends PanelContainer:
 			v.add_child(g)
 			var rows := []
 			if b.has("produce"):
-				var parts := []
-				for c in b.produce:
-					parts.append("%s %d" % [Defs.cargo_name(c), int(b.produce[c])])
-				rows.append(["每月產出", "、".join(parts)])
+				rows.append(["每月產出", b.produce])
 			if b.has("consume"):
-				var parts := []
-				for c in b.consume:
-					parts.append("%s %d" % [Defs.cargo_name(c), int(b.consume[c])])
-				rows.append(["每月耗用", "、".join(parts)])
+				rows.append(["每月耗用", b.consume])
 			if b.has("cover"):
 				rows.append(["照應半徑", "%d 格" % int(b.cover.values()[0])])
 			if b.get("jobs", 0) > 0:
@@ -2212,7 +2613,16 @@ class ToolTipCard extends PanelContainer:
 			rows.append(["每月維護", "%d 兩" % b.upkeep])
 			for r in rows:
 				g.add_child(_l(r[0], 13.5, UIArt.INK_3))
-				g.add_child(_l(r[1], 13.5, UIArt.INK, "num"))
+				if r[1] is Dictionary:
+					# 貨物：圖示加名稱與數量
+					var hb := HBoxContainer.new()
+					hb.add_theme_constant_override("separation", 3)
+					for c in r[1]:
+						hb.add_child(Ico.make(Defs.cargo_icon(c), 18))
+						hb.add_child(_l("%s %d　" % [Defs.cargo_name(c), int(r[1][c])], 13.5, UIArt.INK, "num"))
+					g.add_child(hb)
+				else:
+					g.add_child(_l(r[1], 13.5, UIArt.INK, "num"))
 			var rule := {"road": "須臨道路", "forest": "須在林地旁", "hill": "須建於丘陵", "mountain": "須建於山上", "shore": "須臨水", "grass": "須在平地", "land": "陸地皆可"}
 			if b.has("place"):
 				v.add_child(_l(rule.get(b.place, ""), 13, UIArt.INK_2))
@@ -2229,6 +2639,8 @@ class ToolTipCard extends PanelContainer:
 		return p
 
 	static func _l(text: String, size: float, col: Color, kind: String = "body") -> Label:
+		if kind == "body" and size <= 14:
+			kind = "body_b"
 		var l := Label.new()
 		l.text = text
 		l.add_theme_font_override("font", UIArt.font(kind))
@@ -2269,7 +2681,16 @@ class BookMark extends Button:
 		theme_type_variation = "Flat"
 		custom_minimum_size = Vector2(46, 86)
 
+	var pull := 0.0   # 滑過時向外抽出四像素
+
+	func _process(delta: float) -> void:
+		var goal := 4.0 if is_hovered() and not on and Motion.full else 0.0
+		if pull != goal:
+			pull = move_toward(pull, goal, delta * 40.0)
+			queue_redraw()
+
 	func _draw() -> void:
+		draw_set_transform(Vector2(pull, 0))
 		var r := Rect2(Vector2.ZERO, size)
 		var line := UIArt.IVORY
 		var tc := UIArt.IVORY
@@ -2283,7 +2704,8 @@ class BookMark extends Button:
 			UIArt.wood_rid(get_canvas_item(), r, "all")
 			if is_hovered():
 				draw_rect(r, Color(1, 1, 1, 0.08))
-		UIArt.icon(self, kind, Rect2(size.x * 0.5 - 10, 10, 20, 20), line)
+		UIArt.icon(self, kind, Rect2(size.x * 0.5 - 10 + pull, 10, 20, 20), line)
+		draw_set_transform(Vector2(pull, 0))
 		UIArt.vtext(self, UIArt.font("body"), Vector2(size.x * 0.5, 38), label, 16, tc, 0.2)
 
 
@@ -2291,6 +2713,7 @@ class BookMark extends Button:
 class LogStrip extends Control:
 	var lines: Array = []
 	var age := 0.0
+	var slide := 0.0   # 新一則滑入：1 → 0
 	var ui
 	var line_rects: Array = []
 
@@ -2325,6 +2748,9 @@ class LogStrip extends Control:
 				return
 
 	func _process(delta: float) -> void:
+		if slide > 0.0:
+			slide = move_toward(slide, 0.0, delta / 0.22)
+			queue_redraw()
 		var a0 := age
 		age += delta
 		if a0 < 40.0 and age >= 25.0:
@@ -2349,12 +2775,15 @@ class LogStrip extends Control:
 		var f := UIArt.font("body")
 		var nf := UIArt.font("num")
 		UIArt.text_l(self, UIArt.font("title"), 12, r.position.y + 14, "邸　報", 12, UIArt.INK_3)
-		var y := r.end.y - 16.0
+		var sl := Motion.ease_in(slide) * 25.0
+		var y := r.end.y - 16.0 + sl
 		line_rects.clear()
 		line_rects.resize(lines.size())
 		for i in lines.size():
 			var l: Dictionary = lines[i]
 			var a: float = [1.0, 0.7, 0.5][i]
+			if i == 0:
+				a *= 1.0 - slide
 			var col: Color = UIArt.INK
 			var ic := "note"
 			if l.kind == 1:
@@ -2363,7 +2792,7 @@ class LogStrip extends Control:
 				ic = "bad"
 				col = UIArt.BAD
 			UIArt.icon(self, ic, Rect2(12, y - 8, 16, 16))
-			UIArt.text_l(self, nf, 34, y, l.date, 12, Color(UIArt.INK_3, a))
+			UIArt.text_l(self, nf, 34, y, l.date, 13, Color(UIArt.INK_3, a))
 			var right := size.x - 12
 			if l.at != Game.NO_CELL:
 				right -= 22
@@ -2491,45 +2920,63 @@ class MiniMap extends Control:
 	var img: Image
 	var t := 0.0
 	var dragging := false
+	var built_rev := -1
+	var last_cam := Rect2()
 
 	func _init() -> void:
 		custom_minimum_size = Vector2(Defs.N * 2 * S, Defs.N * S)
 		mouse_filter = Control.MOUSE_FILTER_STOP
 		tooltip_text = "輿圖：點擊或拖曳以移動視野"
 
+	## 地圖有改動才重建（至多兩秒一次）；視野框只在鏡頭移動時重畫。
 	func _process(delta: float) -> void:
 		t -= delta
-		if t <= 0 and is_visible_in_tree() and Game.running:
+		if t <= 0 and is_visible_in_tree() and Game.running and Game.map_rev != built_rev:
 			t = 2.0
 			_rebuild()
-		queue_redraw()
+			queue_redraw()
+		var cam: Camera2D = main.cam
+		var cr := Rect2(cam.get_screen_center_position(), cam.zoom)
+		if cr != last_cam:
+			last_cam = cr
+			queue_redraw()
 
 	func _rebuild() -> void:
 		var g = Game
 		var N: int = g.N
-		if img == null:
-			img = Image.create(N * 2, N, false, Image.FORMAT_RGBA8)
-		img.fill(Color(0, 0, 0, 0))
+		built_rev = g.map_rev
 		var tc := [Color("b9bf9a"), Color("8fa7a6"), Color("7f927a"), Color("c2b896"), Color("98a09c")]
 		var bc := {"house": Color("9b8566"), "shop": Color("6b7c95"), "workshop": Color("a88a55"),
 			"farm": Color("c9b783"), "town": UIArt.ZHU, "yamen": UIArt.ZHU}
+		var road_c := Color("8f7a5c")
+		var other_c := Color("8b6a55")
+		var data := PackedByteArray()
+		data.resize(N * 2 * N * 4)
+		var o := 0
 		for j in N:
 			for i in N * 2:
 				var u := i - N + 0.5
 				var v := 2.0 * j + 1.0
 				var x := int(round((u + v) * 0.5 - 0.5))
 				var y := int(round((v - u) * 0.5 - 0.5))
-				if not g.inb(x, y):
-					continue
-				var k: int = g.idx(x, y)
-				var c: Color = tc[g.terrain[k]]
-				if g.bld[k] >= 0:
-					c = bc.get(g.buildings[g.bld[k]].type, Color("8b6a55"))
-				elif g.road[k] > 0:
-					c = Color("8f7a5c")
-				elif g.zone[k] > 0:
-					c = c.lerp(Defs.ZONE_COLORS[g.zone[k]], 0.35)
-				img.set_pixel(i, j, c)
+				if x >= 0 and y >= 0 and x < N and y < N:
+					var k: int = y * N + x
+					var c: Color
+					var b: int = g.bld[k]
+					if b >= 0:
+						c = bc.get(g.buildings[b].type, other_c)
+					elif g.road[k] > 0:
+						c = road_c
+					elif g.zone[k] > 0:
+						c = (tc[g.terrain[k]] as Color).lerp(Defs.ZONE_COLORS[g.zone[k]], 0.35)
+					else:
+						c = tc[g.terrain[k]]
+					data[o] = c.r8
+					data[o + 1] = c.g8
+					data[o + 2] = c.b8
+					data[o + 3] = 255
+				o += 4
+		img = Image.create_from_data(N * 2, N, false, Image.FORMAT_RGBA8, data)
 		if tex == null:
 			tex = ImageTexture.create_from_image(img)
 		else:

@@ -8,6 +8,7 @@ signal month_passed
 signal quest_done(id: String)
 signal combo_found(id: String)
 signal building_fx(id: int, kind: String)   # placed／built／upgrade／combo，供畫面播放動畫
+signal building_removed(b: Dictionary, cause: String)   # 拆除、焚毀、沖毀、敗落；畫面據此播倒塌與殘垣
 
 const WorldGen = preload("res://scripts/sim/worldgen.gd")
 const DIRS: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
@@ -62,6 +63,7 @@ var stats := {}
 var report := {"income": {}, "expense": {}}
 var trade_month := 0.0
 var drought := 0
+var map_rev := 0     # 地圖每有改動就加一；輿圖據此決定要不要重建（只供畫面用）
 var plague_t := 0      # 疫病餘日，期間缺醫的民居掛警示籤
 var bumper := false
 var food_short := 0.0
@@ -102,6 +104,7 @@ func inb(x: int, y: int) -> bool:
 func mark(x: int, y: int) -> void:
 	if inb(x, y):
 		dirty[idx(x, y)] = true
+		map_rev += 1
 
 
 func mark_b(b: Dictionary) -> void:
@@ -323,7 +326,8 @@ func add_building(type: String, x: int, y: int, extra: Dictionary = {}) -> int:
 	return b.id
 
 
-func remove_building(id: int) -> void:
+## cause：bulldoze 拆除、fire 焚毀、flood 沖毀、plague 疫死、decay 敗落。只供畫面選動畫，不影響模擬。
+func remove_building(id: int, cause: String = "bulldoze") -> void:
 	if not buildings.has(id):
 		return
 	var b: Dictionary = buildings[id]
@@ -337,6 +341,7 @@ func remove_building(id: int) -> void:
 	burning.erase(id)
 	buildings.erase(id)
 	mark_b(b)
+	building_removed.emit(b, cause)
 
 
 func building_at(x: int, y: int) -> Dictionary:
@@ -620,6 +625,35 @@ func build_roads(cells: Array, kind: int) -> int:
 		zone_dirty = true
 		# 立即重算通達，暫停時也看得到結果
 		_update_connectivity()
+	return spent
+
+
+## 填土：把水面填成陸地。運河是人工挖的，回填便宜；天然河湖要運土石，貴些。
+## 有路（橋）、建築的格子不填，以免橋斷在半空。回傳花費。
+func fill_water(cells: Array) -> int:
+	var spent := 0
+	for c in cells:
+		if not inb(c.x, c.y):
+			continue
+		var i := idx(c.x, c.y)
+		if terrain[i] != Defs.T.WATER or road[i] > 0 or bld[i] >= 0:
+			continue
+		var cost := 10 if canal[i] > 0 else 30
+		if money < cost:
+			log_msg("銀兩不足，未能填完。", 2)
+			break
+		money -= cost
+		spent += cost
+		terrain[i] = Defs.T.GRASS
+		canal[i] = 0
+		astar_water.set_point_solid(c, true)
+		for dy in range(-1, 2):
+			for dx in range(-1, 2):
+				mark(c.x + dx, c.y + dy)
+	if spent > 0:
+		_compute_shore()
+		zone_dirty = true
+		connectivity_dirty = true
 	return spent
 
 
@@ -965,6 +999,7 @@ func _monthly() -> void:
 	_happiness()
 	_station_transfer()
 	_upgrades()
+	_pave_roads()
 	_events()
 	var old_season := season()
 	month += 1
@@ -1301,6 +1336,53 @@ func _lux_stock() -> float:
 	return t
 
 
+## 街道自鋪石板：晉鎮以後，兩旁房舍興旺的土路由官府出資鋪成石板，每月至多十二格、每格十兩。
+## 只鋪陸上的路（橋不動，以免改了拱橋、虹橋的判定）。依格子順序挑，結果與亂數無關。
+const PAVE_PER_MONTH := 12
+const PAVE_COST := 10
+
+
+func _pave_roads() -> void:
+	if rank < 1 or money < 300:
+		return
+	var picks := []
+	for i in N * N:
+		if road[i] != 1 or terrain[i] == Defs.T.WATER:
+			continue
+		var x := i % N
+		var y := i / N
+		var good := 0
+		var shop := false
+		for d in DIRS:
+			var b := building_at(x + d.x, y + d.y)
+			if b.is_empty() or b.type == "farm" or not is_grow(b) or b.level < 2:
+				continue
+			good += 1
+			if b.type == "shop":
+				shop = true
+		if good >= 2 or shop:
+			picks.append(i)
+			if picks.size() >= PAVE_PER_MONTH:
+				break
+	var n := 0
+	var first := NO_CELL
+	for i in picks:
+		if money < 300 + PAVE_COST:
+			break
+		money -= PAVE_COST
+		road[i] = 2
+		var c := Vector2i(i % N, i / N)
+		if first == NO_CELL:
+			first = c
+		for dy in range(-1, 2):
+			for dx in range(-1, 2):
+				mark(c.x + dx, c.y + dy)
+		n += 1
+	if n > 0:
+		zone_dirty = true
+		log_msg("城中街市興旺，官府出資鋪石板路%s格。" % Defs.cn_num(n), 0, first)
+
+
 func _upgrades() -> void:
 	var s: float = stats.staff
 	var lux := _lux_stock()
@@ -1321,7 +1403,7 @@ func _upgrades() -> void:
 							b.level -= 1
 							mark_b(b)
 						else:
-							remove_building(b.id)
+							remove_building(b.id, "decay")
 							removed += 1
 						continue
 				else:
@@ -1806,7 +1888,7 @@ func _update_fires() -> void:
 				log_msg("%s焚毀殆盡。" % bname(b), 2, Vector2i(b.x, b.y))
 				if _last_annal_year("fire") != year:
 					chronicle("fire", "城裡失火，%s燒毀了。" % bname(b))
-				remove_building(id)
+				remove_building(id, "fire")
 
 
 func _events() -> void:
@@ -1848,7 +1930,7 @@ func _events() -> void:
 					b.level -= 1
 					mark_b(b)
 				else:
-					remove_building(b.id)
+					remove_building(b.id, "plague")
 				lost += 1
 		plague_t = 60
 		log_msg("疫病流行，%s戶染疾。廣設醫館可防。" % Defs.cn_num(lost), 2, at)
@@ -1907,7 +1989,7 @@ func _flood() -> void:
 					b.level = 1
 					mark_b(b)
 				else:
-					remove_building(b.id)
+					remove_building(b.id, "flood")
 		if hit > 0:
 			log_msg("河水暴漲，沖毀%s處屋舍田畝。施行「興修水利」可防。" % Defs.cn_num(hit), 2, Vector2i(x, y))
 			chronicle("flood", "河水暴漲，沖毀%s處房屋田地。" % Defs.cn_big(hit))
@@ -2304,14 +2386,14 @@ func building_info(b: Dictionary) -> String:
 		"workshop":
 			var ws := int(ws_supplied * 100)
 			s += "[stats]people,%d,匠人;store,%d%%,原料,%s[/stats]" % [Defs.GROW.workshop.jobs[l], ws, C_GOOD if ws >= 50 else C_BAD]
-			s += "[k]絲[/k] → 綢緞　[k]鐵[/k]、[k]木[/k] → 器物\n[color=%s]無料時只能手作少量器物[/color]\n" % C_NOTE
+			s += "{i:c_silk}[k]絲[/k] → {i:c_cloth}綢緞　{i:c_iron}[k]鐵[/k]、{i:c_wood}[k]木[/k] → {i:c_ware}器物\n[color=%s]無料時只能手作少量器物[/color]\n" % C_NOTE
 		"farm":
 			s += "[stats]people,%d,農人;land,%d%%,肥力;grain,%.0f,上月收成[/stats]" % [Defs.GROW.farm.jobs[l], int(fert[i] * 100), b.last]
 		"town":
 			var m: Dictionary = b.get("mult", {})
 			var parts := []
 			for c in m:
-				parts.append("[b]%s[/b] [color=%s]×%.1f[/color]" % [Defs.cargo_name(c), C_GOOD, m[c]])
+				parts.append("%s [color=%s]×%.1f[/color]" % [Defs.cargo_tag(c), C_GOOD, m[c]])
 			s += "收購一切貨物，[k]路途愈遠，獲利愈豐[/k]。\n{i:silver} 高價收購　%s\n" % "、".join(parts)
 		_:
 			var d: Dictionary = Defs.B.get(b.type, {})
@@ -2320,10 +2402,10 @@ func building_info(b: Dictionary) -> String:
 				st.append("industry,%.0f,上月產出" % b.last)
 				var ins := []
 				for c in d.get("consume", {}):
-					ins.append("[b]%s[/b] %d" % [Defs.cargo_name(c), int(d.consume[c])])
+					ins.append("%s %d" % [Defs.cargo_tag(c), int(d.consume[c])])
 				var outs := []
 				for c in d.produce:
-					outs.append("[b]%s[/b] %d" % [Defs.cargo_name(c), int(d.produce[c])])
+					outs.append("%s %d" % [Defs.cargo_tag(c), int(d.produce[c])])
 				s += "{i:industry} %s%s　[color=%s]每月，滿員時[/color]\n" % [
 					("、".join(ins) + " → ") if ins.size() > 0 else "", "、".join(outs), C_NOTE]
 			if d.get("jobs", 0) > 0:
@@ -2341,7 +2423,7 @@ func building_info(b: Dictionary) -> String:
 		var parts := []
 		for c in Defs.CARGO_ORDER:
 			if b.stock.get(c, 0.0) >= 0.5:
-				parts.append("[b]%s[/b] %d" % [Defs.cargo_name(c), int(b.stock[c])])
+				parts.append("%s %d" % [Defs.cargo_tag(c), int(b.stock[c])])
 		if parts.size() > 0:
 			s += "{i:store} 存貨　%s\n" % "、".join(parts)
 	if is_stop(b):

@@ -2,7 +2,7 @@ extends Node
 ## 遊戲中所有靜態資料：地形、貨物、建築、品級、政令、車船。
 
 const N := 100            # 地圖邊長（格）
-const DAY_SEC := 0.5      # 一倍速下一日的秒數
+const DAY_SEC := 1.0      # 一倍速下一日的秒數：一月三十秒、一季一分半、一年六分鐘
 
 enum T { GRASS, WATER, FOREST, HILL, MOUNTAIN }
 enum Z { NONE, RES, COM, IND, FARM }
@@ -123,6 +123,7 @@ const ROAD_TOOLS := [
 	{"id": "road_dirt", "name": "土路", "cost": 5, "rank": 0, "desc": "每格五兩，過水成橋（二十五兩）。"},
 	{"id": "road_stone", "name": "石板路", "cost": 15, "rank": 1, "desc": "車行更快，地價更高。"},
 	{"id": "canal", "name": "運河", "cost": 40, "rank": 1, "desc": "開鑿水道，令船隻深入內陸。"},
+	{"id": "fill", "name": "填土", "cost": 30, "rank": 0, "desc": "填平水面為陸地，可拖曳成片；運河每格十兩，河湖每格三十兩。橋與建築所在的格子不填。"},
 	{"id": "wall", "name": "城牆", "cost": 20, "rank": 1, "desc": "城牆跨路處自成城門，略增治安與地價。"},
 	{"id": "bulldoze", "name": "拆除", "cost": 2, "rank": 0, "desc": "拆除建築、道路、城牆或填平運河。"},
 ]
@@ -233,7 +234,14 @@ var font: Font
 
 
 func _init() -> void:
-	font = load("res://fonts/LXGWWenKaiTC-Medium.ttf")
+	# 地圖上的招牌、匾額字號只有七八像素，鏡頭放大時點陣字會糊；改用多通道距離場（MSDF），任何縮放下邊緣都銳利
+	var f: FontFile = load("res://fonts/LXGWWenKaiTC-Medium.ttf")
+	if f != null:
+		f = f.duplicate()
+		f.multichannel_signed_distance_field = true
+		f.msdf_pixel_range = 8
+		f.msdf_size = 48
+	font = f
 
 
 static func cn_num(n: int) -> String:
@@ -292,6 +300,16 @@ static func cn_big(n: int) -> String:
 
 static func cargo_name(c: String) -> String:
 	return CARGO[c]["name"] if CARGO.has(c) else c
+
+
+## 貨物圖示名（UIArt.icon 用）。
+static func cargo_icon(c: String) -> String:
+	return "c_" + c if CARGO.has(c) else "store"
+
+
+## 富文本裡的貨物：圖示加名稱，例如「{i:c_silk}絲」。
+static func cargo_tag(c: String, bold: bool = true) -> String:
+	return ("{i:%s}[b]%s[/b]" if bold else "{i:%s}%s") % [cargo_icon(c), cargo_name(c)]
 
 
 static func season_of(month: int) -> int:

@@ -5,6 +5,7 @@ const Art = preload("res://scripts/view/art.gd")
 const WorldView = preload("res://scripts/view/world_view.gd")
 const ScrollPainter = preload("res://scripts/view/scroll_painter.gd")
 const UI = preload("res://scripts/ui/ui.gd")
+const Motion = preload("res://scripts/view/motion.gd")
 
 var cam: Camera2D
 var world: Node2D
@@ -37,6 +38,10 @@ var auto := false
 var painting := false   # 正在繪長卷
 var dev := false        # 開發模式：快捷鍵加銀、晉升、過月，載入測試城
 var start_city := ""    # --city=auto：跳過開場，直接進入自動建好的測試城
+# 滾輪縮放：目標倍率與錨點，每幀平滑趨近；別處直接改 cam.zoom 時（鏡頭跳轉、錄影）以那邊為準
+var zoom_goal := 1.0
+var zoom_anchor := Vector2.ZERO
+var zoom_last := 1.0
 
 
 func _ready() -> void:
@@ -57,6 +62,9 @@ func _ready() -> void:
 	ui.main = self
 	add_child(ui)
 	Game.map_reset.connect(_on_map_reset)
+	Game.rank_changed.connect(func(r: int):
+		if not title_mode and r > 0:
+			cursor.grow_reach(Defs.RANKS[r - 1]["radius"]))
 	var test_only := []
 	var testing := false
 	for a in OS.get_cmdline_user_args():
@@ -152,13 +160,20 @@ func _load_settings() -> void:
 	var cf := ConfigFile.new()
 	if cf.load(SETTINGS_PATH) == OK:
 		ui_scale_idx = clampi(int(cf.get_value("ui", "scale", 0)), 0, UI_SCALES.size() - 1)
+		Motion.full = bool(cf.get_value("ui", "motion_full", true))
 
 
 func _save_settings() -> void:
 	var cf := ConfigFile.new()
 	cf.load(SETTINGS_PATH)
 	cf.set_value("ui", "scale", ui_scale_idx)
+	cf.set_value("ui", "motion_full", Motion.full)
 	cf.save(SETTINGS_PATH)
+
+
+func toggle_motion() -> void:
+	Motion.full = not Motion.full
+	_save_settings()
 
 
 func _on_map_reset() -> void:
@@ -284,7 +299,7 @@ func rect_cells(a: Vector2i, b: Vector2i) -> Array:
 func tool_kind() -> String:
 	if tool in ["road_dirt", "road_stone", "canal", "wall"]:
 		return "line"
-	if tool.begins_with("zone_") or tool == "bulldoze":
+	if tool.begins_with("zone_") or tool == "bulldoze" or tool == "fill":
 		return "rect"
 	if tool.begins_with("b:"):
 		return "place"
@@ -303,6 +318,8 @@ func set_tool(t: String) -> void:
 
 
 func _process(delta: float) -> void:
+	Motion.tick(delta)
+	_smooth_zoom(delta)
 	if title_mode:
 		title_t += delta
 		cam.position += Vector2(cos(title_t * 0.1), sin(title_t * 0.13)) * 12.0 * delta
@@ -354,7 +371,7 @@ func _hover_info(t: Vector2i) -> String:
 		var v: Dictionary = Game.vehicles[vid]
 		var s: String = "[b]%s[/b]" % Defs.VEHICLES[v.kind]["name"]
 		if v.amt > 0:
-			s += "　{i:store} %s [b]%d[/b]" % [Defs.cargo_name(v.cargo), int(v.amt)]
+			s += "　{i:%s} %s [b]%d[/b]" % [Defs.cargo_icon(v.cargo), Defs.cargo_name(v.cargo), int(v.amt)]
 		return s
 	var b := Game.building_at(t.x, t.y)
 	if b.is_empty():
@@ -441,12 +458,38 @@ func _unhandled_input(ev: InputEvent) -> void:
 
 
 func _zoom_at(f: float, screen_pos: Vector2) -> void:
-	var before := get_global_mouse_position()
-	var z := clampf(cam.zoom.x * f, 0.3, 2.5)
+	if not Motion.full:
+		_zoom_step(clampf(cam.zoom.x * f, 0.3, 2.5), screen_pos)
+		return
+	if not is_equal_approx(cam.zoom.x, zoom_last):
+		zoom_goal = cam.zoom.x
+	zoom_goal = clampf(zoom_goal * f, 0.3, 2.5)
+	zoom_anchor = screen_pos
+
+
+## 縮放一步，並讓滑鼠下的那一點不動。
+func _zoom_step(z: float, screen_pos: Vector2) -> void:
+	var before := get_canvas_transform().affine_inverse() * screen_pos
 	cam.zoom = Vector2(z, z)
+	zoom_last = z
 	var after := get_canvas_transform().affine_inverse() * screen_pos
 	cam.position += before - after
 	_clamp_cam()
+
+
+## 滾輪縮放約一百二十毫秒平滑到位。若 cam.zoom 被別處改過（鏡頭跳轉、錄影、測試），放棄目前的目標。
+func _smooth_zoom(delta: float) -> void:
+	var z := cam.zoom.x
+	if not is_equal_approx(z, zoom_last):
+		zoom_goal = z
+		zoom_last = z
+		return
+	if absf(z - zoom_goal) < 0.0005:
+		return
+	var nz := lerpf(z, zoom_goal, 1.0 - exp(-delta * 28.0))
+	if absf(nz - zoom_goal) < 0.002:
+		nz = zoom_goal
+	_zoom_step(nz, zoom_anchor)
 
 
 func _cancel() -> void:
@@ -541,6 +584,8 @@ func _release(t: Vector2i) -> void:
 			spent = Game.build_canals(line_cells(drag_start, t))
 		"wall":
 			spent = Game.build_walls(line_cells(drag_start, t))
+		"fill":
+			spent = Game.fill_water(rect_cells(drag_start, t))
 		"bulldoze":
 			var cells := rect_cells(drag_start, t)
 			if cells.size() > 1:
@@ -959,10 +1004,25 @@ func _auto_build() -> void:
 # ───────────────────────── 游標預覽 ─────────────────────────
 
 class Cursor extends Node2D:
+	const REACH_GROW := 1.2
+	const REACH_HOLD := 2.4
+	const REACH_FADE := 0.6
 	var main
+	var reach_t := -1.0      # 晉升時轄境外擴的動畫進度（秒）；負值為不播
+	var reach_from := 0.0
 
-	func _process(_d: float) -> void:
-		if main.selected >= 0 or main.selected_vehicle >= 0 or main.tool == "route" or main.ui.window_open("routes"):
+	## 晉升：轄境圈由舊半徑擴到新半徑，圈上「轄境」二字隨圈移動，停一會兒再淡去。
+	func grow_reach(old_r: float) -> void:
+		reach_from = old_r
+		reach_t = 0.0 if Motion.full else REACH_GROW
+
+	func _process(d: float) -> void:
+		if reach_t >= 0.0:
+			reach_t += d
+			if reach_t > REACH_GROW + REACH_HOLD + REACH_FADE:
+				reach_t = -1.0
+			queue_redraw()
+		elif main.selected >= 0 or main.selected_vehicle >= 0 or main.tool == "route" or main.ui.window_open("routes"):
 			queue_redraw()
 
 	func _diamond(t: Vector2i, col: Color, fill: bool = true) -> void:
@@ -976,22 +1036,10 @@ class Cursor extends Node2D:
 	## 轄境圈（墨色虛線）與路況：在轄境外的路標琥珀色，沒接上縣衙的路標紅色。只畫畫面內的格。
 	func _reach_overlay() -> void:
 		var g = Game
-		var yc: Vector2 = g.yamen_center()
 		var r: float = g.radius() + 0.5
-		# 線寬隨縮放調整，全景時也看得清；底下先墊一道淡紙色，雪地與樹林上也分得出
-		var lw := clampf(2.4 / main.cam.zoom.x, 2.0, 7.0)
-		var n := 180
-		for k in n:
-			if k % 3 == 2:
-				continue
-			var a0 := k / float(n) * TAU
-			var a1 := (k + 1) / float(n) * TAU
-			var p0 := Art.iso(yc.x + cos(a0) * r, yc.y + sin(a0) * r)
-			var p1 := Art.iso(yc.x + cos(a1) * r, yc.y + sin(a1) * r)
-			draw_line(p0, p1, Color(0.96, 0.92, 0.82, 0.55), lw * 2.2)
-			draw_line(p0, p1, Color(0.62, 0.16, 0.1, 0.9), lw)
-		var top := Art.iso(yc.x - r * 0.7071, yc.y - r * 0.7071)
-		Art.label(self, top - Vector2(0, 14 / main.cam.zoom.x), "轄境", int(clampf(16 / main.cam.zoom.x, 14, 40)), Color(0.62, 0.16, 0.1))
+		if reach_t >= 0.0:
+			r = lerpf(reach_from, g.radius(), Motion.ease_out(reach_t / REACH_GROW)) + 0.5
+		_reach_ring(r, 1.0)
 		var vr: Rect2 = main.world.view_rect()
 		var t0: Vector2i = main.to_tile(vr.position)
 		var t1: Vector2i = main.to_tile(vr.end)
@@ -1003,6 +1051,23 @@ class Cursor extends Node2D:
 				if g.road[i] == 0 or g.conn_road(i):
 					continue
 				_diamond(Vector2i(x, y), Color(0.9, 0.6, 0.15, 0.45) if g.road_dist[i] >= 0 else Color(0.9, 0.2, 0.15, 0.45))
+
+	## 轄境圈：墨色虛線，底下墊一道淡紙色，雪地與樹林上也分得出；線寬隨縮放調整，全景時也看得清。
+	func _reach_ring(r: float, a: float) -> void:
+		var yc: Vector2 = Game.yamen_center()
+		var lw := clampf(2.4 / main.cam.zoom.x, 2.0, 7.0)
+		var n := 180
+		for k in n:
+			if k % 3 == 2:
+				continue
+			var a0 := k / float(n) * TAU
+			var a1 := (k + 1) / float(n) * TAU
+			var p0 := Art.iso(yc.x + cos(a0) * r, yc.y + sin(a0) * r)
+			var p1 := Art.iso(yc.x + cos(a1) * r, yc.y + sin(a1) * r)
+			draw_line(p0, p1, Color(0.96, 0.92, 0.82, 0.55 * a), lw * 2.2)
+			draw_line(p0, p1, Color(0.62, 0.16, 0.1, 0.9 * a), lw)
+		var top := Art.iso(yc.x - r * 0.7071, yc.y - r * 0.7071)
+		Art.label(self, top - Vector2(0, 14 / main.cam.zoom.x), "轄境", int(clampf(16 / main.cam.zoom.x, 14, 40)), Color(0.62, 0.16, 0.1, a))
 
 	## 墊一塊紙的標籤，壓在樹林、雪地上也讀得清。字級隨縮放反向調整，畫面上大小不變。
 	func _tag(p: Vector2, text: String, size: int, col: Color) -> void:
@@ -1067,8 +1132,15 @@ class Cursor extends Node2D:
 				_circle(g.b_center(b), d.cover[k], Color(0.3, 0.8, 0.4))
 		elif m.selected_tile.x >= 0 and m.tool == "":
 			_diamond(m.selected_tile, Color(1, 0.9, 0.3, 0.2))
+		var reach_tool: bool = m.tool_kind() in ["line", "rect", "place"] and m.tool != "wall" and m.tool != "canal"
+		if reach_t >= 0.0 and not reach_tool:
+			# 晉升時沒拿工具也畫一次外擴，停一會兒淡去
+			var rr: float = lerpf(reach_from, g.radius(), Motion.ease_out(reach_t / REACH_GROW)) + 0.5
+			_reach_ring(rr, 1.0 - clampf((reach_t - REACH_GROW - REACH_HOLD) / REACH_FADE, 0.0, 1.0))
 		var h: Vector2i = m.hover
 		if not g.inb(h.x, h.y):
+			if reach_tool and reach_t >= 0.0:
+				_reach_overlay()
 			return
 		if m.bot_mode:
 			# 示範影片用的游標
@@ -1078,7 +1150,7 @@ class Cursor extends Node2D:
 			arrow.append(arrow[0])
 			draw_polyline(arrow, Color(1, 0.97, 0.9), 1.5)
 		# 修路、劃區、放建築時，畫出轄境圈，並把路依通達與否上色
-		if m.tool_kind() in ["line", "rect", "place"] and m.tool != "wall" and m.tool != "canal":
+		if reach_tool:
 			_reach_overlay()
 		match m.tool_kind():
 			"line":
@@ -1107,7 +1179,17 @@ class Cursor extends Node2D:
 			"rect":
 				var cells: Array = m.rect_cells(m.drag_start, h) if m.dragging else [h]
 				var col := Color(0.95, 0.3, 0.2, 0.35)
-				if m.tool.begins_with("zone_"):
+				if m.tool == "fill":
+					var total := 0
+					for c in cells:
+						var ci: int = g.idx(c.x, c.y) if g.inb(c.x, c.y) else -1
+						if ci >= 0 and g.terrain[ci] == Defs.T.WATER and g.road[ci] == 0 and g.bld[ci] < 0:
+							_diamond(c, Color(0.72, 0.6, 0.4, 0.6))
+							total += 10 if g.canal[ci] > 0 else 30
+						else:
+							_diamond(c, Color(0.6, 0.6, 0.6, 0.12), false)
+					Art.label(self, Art.iso(h.x, h.y) - Vector2(0, 26), "%d 兩" % total, 15, Color(0.15, 0.08, 0.05))
+				elif m.tool.begins_with("zone_"):
 					var z := int(m.tool.substr(5))
 					col = Defs.ZONE_COLORS[z] if z > 0 else Color(0.5, 0.5, 0.5, 0.35)
 					for c in cells:
